@@ -1,0 +1,2 @@
+CREATE DATABASE IF NOT EXISTS catms_db;
+USE catms_db;
