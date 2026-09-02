@@ -35,7 +35,7 @@ CATMS-Backend/
    docker compose up --build
    ```
 
-The REST API will run on `http://localhost:8080` and MySQL on port `3306`.
+The Spring Boot service is currently a backend foundation. REST endpoints and database-backed workflows are still being implemented.
 
 ### Option 2: Local Execution
 
