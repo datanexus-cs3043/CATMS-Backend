@@ -1,28 +1,32 @@
 # CATMS-Backend
 
-Spring Boot backend and MySQL database scripts for MedSync / CATMS.
+Spring Boot 3 REST API backend and MySQL database layer for **MedSync / CATMS**.
 
-## Tech Stack
-- Java 21 / Spring Boot 3
-- Spring JDBC (`JdbcTemplate`, `NamedParameterJdbcTemplate`)
-- MySQL 8.0
-- Docker & Docker Compose
+## Technical Stack
 
-## Project Structure
+- **Language & Runtime**: Java 21 LTS
+- **Framework**: Spring Boot 3 (`spring-boot-starter-web`)
+- **Data Access**: Spring JDBC (`JdbcTemplate`, `NamedParameterJdbcTemplate`)
+- **Database Engine**: MySQL 8.0
+- **Containerization**: Docker & Docker Compose
+
+## Repository Structure
+
 ```text
 CATMS-Backend/
-├── database/        # SQL scripts in execution order (01 to 10)
-├── src/             # Spring Boot source code
-├── compose.yaml     # Docker compose for local dev (MySQL + Backend + Frontend)
-├── Dockerfile       # Backend container build
-├── pom.xml          # Maven dependencies
-└── .env.example     # Sample environment variables
+├── database/        # 10-step SQL scripts execution pipeline (01 to 10)
+├── src/             # Spring Boot application source code
+├── compose.yaml     # Multi-container Docker Compose setup (Database + Backend + Frontend)
+├── Dockerfile       # Multi-stage container build definition
+├── pom.xml          # Apache Maven dependencies
+└── .env.example     # Environment variable configuration template
 ```
 
-## Running the Project
+## Execution Guide
 
-### Option 1: Using Docker (Recommended)
-1. Copy the sample environment file:
+### Option 1: Docker Compose (Recommended)
+
+1. Copy environment template:
    ```bash
    cp .env.example .env
    ```
@@ -31,22 +35,16 @@ CATMS-Backend/
    docker compose up --build
    ```
 
-Backend will be running on `http://localhost:8080` and MySQL on port `3306`.
+The REST API will run on `http://localhost:8080` and MySQL on port `3306`.
 
-### Option 2: Running Locally
-1. Start your local MySQL server and create the database by running the scripts in the `database/` folder in order:
-   - `01_database.sql`
-   - `02_tables.sql`
-   - `03_constraints.sql`
-   - `04_indexes.sql`
-   - `05_views.sql`
-   - `06_functions.sql`
-   - `07_procedures.sql`
-   - `08_triggers.sql`
-   - `09_seed_data.sql`
-   - `10_tests.sql`
+### Option 2: Local Execution
 
+1. Start local MySQL 8.0 server and execute SQL scripts in `database/` in exact numeric sequence (`01_database.sql` to `10_tests.sql`).
 2. Run the Spring Boot application:
    ```bash
    mvn spring-boot:run
    ```
+
+## Central Documentation
+
+For full database guidelines, transaction handling rules, and system architecture blueprints, visit the **[project-docs Repository](https://github.com/datanexus-cs3043/project-docs)**.
