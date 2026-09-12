@@ -1,50 +1,65 @@
 # CATMS-Backend
 
-Spring Boot 3 REST API backend and MySQL database layer for **MedSync / CATMS**.
+Python FastAPI REST API backend and PostgreSQL database scripts for **MedSync / CATMS**.
 
 ## Technical Stack
 
-- **Language & Runtime**: Java 21 LTS
-- **Framework**: Spring Boot 3 (`spring-boot-starter-web`)
-- **Data Access**: Spring JDBC (`JdbcTemplate`, `NamedParameterJdbcTemplate`)
-- **Database Engine**: MySQL 8.0
+- **Language & Runtime**: Python 3.11+
+- **Framework**: FastAPI (`uvicorn` ASGI server)
+- **Database Engine**: PostgreSQL 16+ (Hosted on Neon Cloud / local PostgreSQL)
+- **Data Access**: `asyncpg` / `psycopg2`
 - **Containerization**: Docker & Docker Compose
 
 ## Repository Structure
 
 ```text
 CATMS-Backend/
-├── database/        # 10-step SQL scripts execution pipeline (01 to 10)
-├── src/             # Spring Boot application source code
-├── compose.yaml     # Multi-container Docker Compose setup (Database + Backend + Frontend)
-├── Dockerfile       # Multi-stage container build definition
-├── pom.xml          # Apache Maven dependencies
-└── .env.example     # Environment variable configuration template
+├── app/             # FastAPI application
+│   ├── __init__.py
+│   └── main.py      # Entry point & base routes
+├── database/        # 10-step sequential SQL scripts pipeline (01 to 10)
+├── compose.yaml     # Multi-container Docker Compose setup
+├── Dockerfile       # Container build definition
+├── requirements.txt # Python dependencies
+└── .env.example     # Environment configuration template
 ```
 
-## Execution Guide
+## Local Development Execution
 
-### Option 1: Docker Compose (Recommended)
+### Option 1: Local Python Environment
 
-1. Copy environment template:
+1. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   # On Windows:
+   venv\Scripts\activate
+   # On Linux/macOS:
+   source venv/bin/activate
+   ```
+
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Setup environment variables:
    ```bash
    cp .env.example .env
    ```
-2. Build and start containers:
+
+4. Run FastAPI development server with hot-reload:
    ```bash
-   docker compose up --build
+   uvicorn app.main:app --reload --port 8000
    ```
 
-The Spring Boot service is currently a backend foundation. REST endpoints and database-backed workflows are still being implemented.
+The API will be available at `http://localhost:8000` (interactive documentation at `http://localhost:8000/docs`).
 
-### Option 2: Local Execution
+### Option 2: Docker Compose
 
-1. Start local MySQL 8.0 server and execute SQL scripts in `database/` in exact numeric sequence (`01_database.sql` to `10_tests.sql`).
-2. Run the Spring Boot application:
-   ```bash
-   mvn spring-boot:run
-   ```
+```bash
+docker compose up --build
+```
 
 ## Central Documentation
 
-For full database guidelines, transaction handling rules, and system architecture blueprints, visit the **[project-docs Repository](https://github.com/datanexus-cs3043/project-docs)**.
+For system specifications and architecture guidelines, visit the **[project-docs Repository](https://github.com/datanexus-cs3043/project-docs)**.
