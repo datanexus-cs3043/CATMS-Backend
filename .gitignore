@@ -1,38 +1,25 @@
-target/
-!.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
-
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbattrs/
-/nbactions.xml
-/nb-configuration.xml
-/nblibraries.xml
-
-### VS Code ###
-.vscode/
-
-### OS & Environment files ###
-.DS_Store
-Thumbs.db
+# Environment files
 .env
 .env.local
+.env.*.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing & logs
 *.log
+.pytest_cache/
