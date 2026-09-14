@@ -3,3 +3,4 @@
 -- For local PostgreSQL environments, create the database if not already created.
 
 CREATE SCHEMA IF NOT EXISTS public;
+CREATE DATABASE medsync;
