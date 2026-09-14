@@ -26,7 +26,7 @@ CATMS-Backend/
 
 ## Local Development Execution
 
-### Option 1: Local Python Environment
+### Option 1: Local Python Environment (without docker)
 
 1. Create and activate a virtual environment:
    ```bash
