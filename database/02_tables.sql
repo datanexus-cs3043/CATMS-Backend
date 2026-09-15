@@ -83,3 +83,19 @@ CREATE TABLE insurance_claim (
 );
 
 -- Tharushi end
+
+-- Shashika
+
+CREATE TABLE doctor_specialty (
+    doctor_id INTEGER,
+    specialty_id INTEGER,
+    PRIMARY KEY (doctor_id, specialty_id),
+    CONSTRAINT fk_doctor_specialty_doctor
+        FOREIGN KEY (doctor_id) REFERENCES doctor(doctor_id),
+    CONSTRAINT fk_doctor_specialty_specialty
+        FOREIGN KEY (specialty_id) REFERENCES specialty(specialty_id)
+);
+
+
+
+-- Shashika end
