@@ -41,7 +41,7 @@ CREATE TABLE doctor (
         FOREIGN KEY (staff_id) REFERENCES staff(staff_id)
 );
 
--- nayanajith end
+-- Nayanajith end
 
 
 -- Tharushi
@@ -83,6 +83,7 @@ CREATE TABLE insurance_claim (
 );
 
 -- Tharushi end
+
 
 -- Shashika
 
@@ -160,8 +161,6 @@ CREATE TABLE doctor_payment (
     CONSTRAINT fk_doctor_payment_invoice_item
         FOREIGN KEY (invoice_item_id) REFERENCES invoice_item(invoice_item_id)
 );
-
-
 
 -- Helpful indexes for foreign-key lookups
 CREATE INDEX idx_users_logins_user_id ON users_logins(user_id);
