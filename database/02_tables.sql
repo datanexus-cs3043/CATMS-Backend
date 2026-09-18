@@ -294,4 +294,7 @@ CREATE TABLE insurance_provider (
     provider_name VARCHAR(200) UNIQUE,
     contact_details VARCHAR(255)
 );
+
+--adithya end
+--test
 >>>>>>> be80ec6dd86a2738f527bb58cba5b8dafc71f39b
