@@ -1,31 +1,50 @@
+import sys
+import asyncio
+
+# On Windows, psycopg async requires WindowsSelectorEventLoopPolicy
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-import asyncpg
+from psycopg import AsyncConnection
 
-# Import the settings, this will give us the project name and version, and other settings
 from app.core.config import settings
-
-# Import the database connection functions, those will make the connection
 from app.core.database import connect_to_database, close_database_connection, get_db
+from app.api.v1.api import api_router
+from app.schemas.health import HealthResponse
+
+# Configure structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("medsync.main")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Code executed before the application starts taking requests
+    """Manages application lifecycle: connects psycopg3 pool on startup, closes it on shutdown."""
+    logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}...")
     await connect_to_database()
     yield
-    # Code executed when the application is shutting down
+    logger.info(f"Shutting down {settings.PROJECT_NAME}...")
     await close_database_connection()
 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="Clinic Appointment and Treatment Management System API",
+    description="MedSync - Clinic Appointment and Treatment Management System (CATMS) API",
+    openapi_url=f"{settings.API_PREFIX}/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
     lifespan=lifespan,
 )
 
+# CORS configuration for Frontend (React / TypeScript / Vite)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,23 +53,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include API Router under /api (e.g., /api/health)
+app.include_router(api_router, prefix=settings.API_PREFIX)
 
-@app.get("/")
+
+@app.get("/", tags=["Root"])
 def root():
+    """Root metadata endpoint."""
     return {
-        "message": f"{settings.PROJECT_NAME} is active",
+        "project": settings.PROJECT_NAME,
         "version": settings.VERSION,
-        "docs_url": "/docs"
+        "status": "online",
+        "docs_url": "/docs",
+        "redoc_url": "/redoc",
+        "health_check": f"{settings.API_PREFIX}/health",
     }
 
 
-@app.get("/health")
-def health():
-    return {"status": "healthy"}
-
-
-@app.get("/health/db")
-async def health_db(db: asyncpg.Connection = Depends(get_db)):
-    """Verifies live database connectivity by running a basic SELECT query."""
-    result = await db.fetchval("SELECT current_database();")
-    return {"database_status": "connected", "connected_database": result}
+@app.get("/health", tags=["Health"], response_model=HealthResponse)
+async def root_health(conn: AsyncConnection = Depends(get_db)):
+    """Convenience health endpoint at root level."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT current_database() AS db_name, version() AS db_version, NOW()::text AS server_time;")
+        db_info = await cur.fetchone()
+        return HealthResponse(
+            status="healthy",
+            database="connected",
+            database_name=db_info["db_name"] if db_info else None,
+            database_version=db_info["db_version"] if db_info else None,
+            server_time=db_info["server_time"] if db_info else None,
+        )
