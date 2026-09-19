@@ -4,6 +4,7 @@ from psycopg import AsyncConnection
 
 from app.core.database import get_db
 from app.schemas.patient import (
+    PatientCreate,
     PatientResponse,
     PatientDetailResponse,
     EmergencyContactResponse,
@@ -72,4 +73,44 @@ async def get_patient(
         patient_data = dict(patient)
         patient_data["emergency_contacts"] = [EmergencyContactResponse(**c) for c in contacts]
         return PatientDetailResponse(**patient_data)
+
+
+@router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
+async def create_patient(
+    payload: PatientCreate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Register a new patient into the system."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Branch with id {payload.branch_id} does not exist",
+            )
+
+        insert_query = """
+            INSERT INTO patient (
+                branch_id, first_name, last_name, date_of_birth, gender,
+                patient_type, contact_details, email, address
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING *;
+        """
+        await cur.execute(
+            insert_query,
+            (
+                payload.branch_id,
+                payload.first_name,
+                payload.last_name,
+                payload.date_of_birth,
+                payload.gender,
+                payload.patient_type,
+                payload.contact_details,
+                payload.email,
+                payload.address,
+            ),
+        )
+        new_patient = await cur.fetchone()
+        return PatientResponse(**new_patient)
+
 
