@@ -8,6 +8,7 @@ from app.schemas.patient import (
     PatientUpdate,
     PatientResponse,
     PatientDetailResponse,
+    EmergencyContactCreate,
     EmergencyContactResponse,
 )
 
@@ -176,6 +177,61 @@ async def delete_patient(
 
         await cur.execute("DELETE FROM patient WHERE patient_id = %s;", (patient_id,))
         return None
+
+
+@router.get("/{patient_id}/emergency-contacts", response_model=List[EmergencyContactResponse])
+async def list_emergency_contacts(
+    patient_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """List emergency contacts for a patient."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (patient_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Patient with id {patient_id} not found",
+            )
+
+        await cur.execute(
+            "SELECT * FROM emergency_contact WHERE patient_id = %s ORDER BY emergency_contact_id ASC;",
+            (patient_id,),
+        )
+        rows = await cur.fetchall()
+        return [EmergencyContactResponse(**row) for row in rows]
+
+
+@router.post(
+    "/{patient_id}/emergency-contacts",
+    response_model=EmergencyContactResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_emergency_contact(
+    patient_id: int,
+    payload: EmergencyContactCreate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Add a new emergency contact for a patient."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (patient_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Patient with id {patient_id} not found",
+            )
+
+        insert_query = """
+            INSERT INTO emergency_contact (patient_id, contact_name, relationship, phone)
+            VALUES (%s, %s, %s, %s)
+            RETURNING *;
+        """
+        await cur.execute(
+            insert_query,
+            (patient_id, payload.contact_name, payload.relationship, payload.phone),
+        )
+        new_contact = await cur.fetchone()
+        return EmergencyContactResponse(**new_contact)
+
 
 
 
