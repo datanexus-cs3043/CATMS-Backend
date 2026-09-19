@@ -208,5 +208,57 @@ async def delete_appointment(
         return None
 
 
+@router.get("/{appointment_id}/notes", response_model=List[ConsultationNoteResponse])
+async def list_consultation_notes(
+    appointment_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """List consultation notes for a given appointment."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        await cur.execute(
+            "SELECT * FROM consultation_note WHERE appointment_id = %s ORDER BY created_at ASC;",
+            (appointment_id,),
+        )
+        rows = await cur.fetchall()
+        return [ConsultationNoteResponse(**row) for row in rows]
+
+
+@router.post(
+    "/{appointment_id}/notes",
+    response_model=ConsultationNoteResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_consultation_note(
+    appointment_id: int,
+    payload: ConsultationNoteCreate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Add a clinical consultation note to an appointment."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        insert_query = """
+            INSERT INTO consultation_note (appointment_id, note_content)
+            VALUES (%s, %s)
+            RETURNING *;
+        """
+        await cur.execute(insert_query, (appointment_id, payload.note_content))
+        new_note = await cur.fetchone()
+        return ConsultationNoteResponse(**new_note)
+
+
+
 
 
