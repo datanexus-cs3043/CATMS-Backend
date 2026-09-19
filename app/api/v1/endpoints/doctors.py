@@ -1,9 +1,9 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from psycopg import AsyncConnection
 
 from app.core.database import get_db
-from app.schemas.doctor import DoctorResponse
+from app.schemas.doctor import DoctorResponse, DoctorDetailResponse, SpecialtyResponse
 
 router = APIRouter(prefix="/doctors", tags=["Doctors"])
 
@@ -41,3 +41,40 @@ async def list_doctors(
         await cur.execute(query, tuple(params))
         rows = await cur.fetchall()
         return [DoctorResponse(**row) for row in rows]
+
+
+@router.get("/{doctor_id}", response_model=DoctorDetailResponse)
+async def get_doctor(
+    doctor_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Retrieve full doctor profile including assigned specialties and branch."""
+    async with conn.cursor() as cur:
+        query = """
+            SELECT d.*, s.branch_id, b.branch_name, s.email, s.contact_details
+            FROM doctor d
+            JOIN staff s ON d.staff_id = s.staff_id
+            LEFT JOIN branch b ON s.branch_id = b.branch_id
+            WHERE d.doctor_id = %s;
+        """
+        await cur.execute(query, (doctor_id,))
+        doctor = await cur.fetchone()
+        if not doctor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Doctor with id {doctor_id} not found",
+            )
+
+        spec_query = """
+            SELECT sp.*
+            FROM specialty sp
+            JOIN doctor_specialty ds ON sp.specialty_id = ds.specialty_id
+            WHERE ds.doctor_id = %s;
+        """
+        await cur.execute(spec_query, (doctor_id,))
+        specialties = await cur.fetchall()
+
+        doctor_data = dict(doctor)
+        doctor_data["specialties"] = [SpecialtyResponse(**sp) for sp in specialties]
+        return DoctorDetailResponse(**doctor_data)
+
