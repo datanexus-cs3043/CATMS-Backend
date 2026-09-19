@@ -8,6 +8,7 @@ from app.schemas.doctor import (
     DoctorUpdate,
     DoctorResponse,
     DoctorDetailResponse,
+    SpecialtyCreate,
     SpecialtyResponse,
 )
 
@@ -154,5 +155,65 @@ async def update_doctor(
         await cur.execute(update_query, tuple(values))
         updated_doc = await cur.fetchone()
         return DoctorResponse(**updated_doc)
+
+
+@router.get("/specialties/all", response_model=List[SpecialtyResponse])
+async def list_specialties(
+    conn: AsyncConnection = Depends(get_db),
+):
+    """List all available medical specialties."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT * FROM specialty ORDER BY specialty_name ASC;")
+        rows = await cur.fetchall()
+        return [SpecialtyResponse(**row) for row in rows]
+
+
+@router.post("/specialties", response_model=SpecialtyResponse, status_code=status.HTTP_201_CREATED)
+async def create_specialty(
+    payload: SpecialtyCreate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Add a new medical specialty to the catalogue."""
+    async with conn.cursor() as cur:
+        insert_query = """
+            INSERT INTO specialty (specialty_name, description)
+            VALUES (%s, %s)
+            RETURNING *;
+        """
+        await cur.execute(insert_query, (payload.specialty_name, payload.description))
+        new_spec = await cur.fetchone()
+        return SpecialtyResponse(**new_spec)
+
+
+@router.post("/{doctor_id}/specialties/{specialty_id}", status_code=status.HTTP_201_CREATED)
+async def assign_specialty_to_doctor(
+    doctor_id: int,
+    specialty_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Associate a medical specialty with a doctor."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Doctor with id {doctor_id} not found",
+            )
+
+        await cur.execute("SELECT specialty_id FROM specialty WHERE specialty_id = %s;", (specialty_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Specialty with id {specialty_id} not found",
+            )
+
+        insert_query = """
+            INSERT INTO doctor_specialty (doctor_id, specialty_id)
+            VALUES (%s, %s)
+            ON CONFLICT (doctor_id, specialty_id) DO NOTHING;
+        """
+        await cur.execute(insert_query, (doctor_id, specialty_id))
+        return {"message": "Specialty linked to doctor successfully"}
+
 
 
