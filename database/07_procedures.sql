@@ -1,1 +1,2 @@
-USE catms_db;
+-- MedSync CATMS - Stored Procedures (07_procedures.sql)
+-- Target: PostgreSQL 16+ (Neon Cloud / Local)

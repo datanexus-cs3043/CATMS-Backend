@@ -1,1 +1,2 @@
-USE catms_db;
+-- MedSync CATMS - Database Tests (10_tests.sql)
+-- Target: PostgreSQL 16+ (Neon Cloud / Local)

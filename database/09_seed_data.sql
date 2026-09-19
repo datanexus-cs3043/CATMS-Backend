@@ -1,1 +1,2 @@
-USE catms_db;
+-- MedSync CATMS - Seed Data (09_seed_data.sql)
+-- Target: PostgreSQL 16+ (Neon Cloud / Local)

@@ -1,1 +1,2 @@
-USE catms_db;
+-- MedSync CATMS - Database Functions (06_functions.sql)
+-- Target: PostgreSQL 16+ (Neon Cloud / Local)
