@@ -6,6 +6,7 @@ from psycopg import AsyncConnection
 from app.core.database import get_db
 from app.schemas.appointment import (
     AppointmentCreate,
+    AppointmentUpdate,
     AppointmentResponse,
     AppointmentDetailResponse,
     ConsultationNoteResponse,
@@ -149,5 +150,43 @@ async def create_appointment(
         )
         new_appt = await cur.fetchone()
         return AppointmentResponse(**new_appt)
+
+
+@router.put("/{appointment_id}", response_model=AppointmentResponse)
+async def update_appointment(
+    appointment_id: int,
+    payload: AppointmentUpdate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Reschedule or update details of an existing appointment."""
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No update fields provided",
+        )
+
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        set_clauses = [f"{k} = %s" for k in update_data.keys()]
+        values = list(update_data.values())
+        values.append(appointment_id)
+
+        update_query = f"""
+            UPDATE appointment
+            SET {', '.join(set_clauses)}
+            WHERE appointment_id = %s
+            RETURNING *;
+        """
+        await cur.execute(update_query, tuple(values))
+        updated_row = await cur.fetchone()
+        return AppointmentResponse(**updated_row)
+
 
 
