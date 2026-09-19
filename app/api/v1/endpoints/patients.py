@@ -5,6 +5,7 @@ from psycopg import AsyncConnection
 from app.core.database import get_db
 from app.schemas.patient import (
     PatientCreate,
+    PatientUpdate,
     PatientResponse,
     PatientDetailResponse,
     EmergencyContactResponse,
@@ -112,5 +113,51 @@ async def create_patient(
         )
         new_patient = await cur.fetchone()
         return PatientResponse(**new_patient)
+
+
+@router.put("/{patient_id}", response_model=PatientResponse)
+async def update_patient(
+    patient_id: int,
+    payload: PatientUpdate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Update details of an existing patient."""
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No update fields provided",
+        )
+
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (patient_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Patient with id {patient_id} not found",
+            )
+
+        if "branch_id" in update_data:
+            await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (update_data["branch_id"],))
+            if not await cur.fetchone():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Branch with id {update_data['branch_id']} does not exist",
+                )
+
+        set_clauses = [f"{key} = %s" for key in update_data.keys()]
+        values = list(update_data.values())
+        values.append(patient_id)
+
+        update_query = f"""
+            UPDATE patient
+            SET {', '.join(set_clauses)}
+            WHERE patient_id = %s
+            RETURNING *;
+        """
+        await cur.execute(update_query, tuple(values))
+        updated_row = await cur.fetchone()
+        return PatientResponse(**updated_row)
+
 
 
