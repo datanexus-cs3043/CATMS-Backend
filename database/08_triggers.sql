@@ -1,1 +1,2 @@
-USE catms_db;
+-- MedSync CATMS - Database Triggers (08_triggers.sql)
+-- Target: PostgreSQL 16+ (Neon Cloud / Local)
