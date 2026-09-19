@@ -1,9 +1,13 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from psycopg import AsyncConnection
 
 from app.core.database import get_db
-from app.schemas.patient import PatientResponse
+from app.schemas.patient import (
+    PatientResponse,
+    PatientDetailResponse,
+    EmergencyContactResponse,
+)
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
 
@@ -36,3 +40,36 @@ async def list_patients(
         await cur.execute(query, tuple(params))
         rows = await cur.fetchall()
         return [PatientResponse(**row) for row in rows]
+
+
+@router.get("/{patient_id}", response_model=PatientDetailResponse)
+async def get_patient(
+    patient_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Retrieve full patient details including branch and emergency contacts."""
+    async with conn.cursor() as cur:
+        query = """
+            SELECT p.*, b.branch_name
+            FROM patient p
+            LEFT JOIN branch b ON p.branch_id = b.branch_id
+            WHERE p.patient_id = %s;
+        """
+        await cur.execute(query, (patient_id,))
+        patient = await cur.fetchone()
+        if not patient:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Patient with id {patient_id} not found",
+            )
+
+        await cur.execute(
+            "SELECT * FROM emergency_contact WHERE patient_id = %s ORDER BY emergency_contact_id ASC;",
+            (patient_id,),
+        )
+        contacts = await cur.fetchall()
+
+        patient_data = dict(patient)
+        patient_data["emergency_contacts"] = [EmergencyContactResponse(**c) for c in contacts]
+        return PatientDetailResponse(**patient_data)
+
