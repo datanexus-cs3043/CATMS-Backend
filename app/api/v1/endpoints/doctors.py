@@ -3,7 +3,13 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status
 from psycopg import AsyncConnection
 
 from app.core.database import get_db
-from app.schemas.doctor import DoctorResponse, DoctorDetailResponse, SpecialtyResponse
+from app.schemas.doctor import (
+    DoctorCreate,
+    DoctorUpdate,
+    DoctorResponse,
+    DoctorDetailResponse,
+    SpecialtyResponse,
+)
 
 router = APIRouter(prefix="/doctors", tags=["Doctors"])
 
@@ -77,4 +83,76 @@ async def get_doctor(
         doctor_data = dict(doctor)
         doctor_data["specialties"] = [SpecialtyResponse(**sp) for sp in specialties]
         return DoctorDetailResponse(**doctor_data)
+
+
+@router.post("", response_model=DoctorResponse, status_code=status.HTTP_201_CREATED)
+async def create_doctor(
+    payload: DoctorCreate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Register a new doctor profile linked to a staff record."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT staff_id FROM staff WHERE staff_id = %s;", (payload.staff_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Staff member with id {payload.staff_id} does not exist",
+            )
+
+        await cur.execute("SELECT doctor_id FROM doctor WHERE staff_id = %s;", (payload.staff_id,))
+        if await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Doctor profile already exists for staff id {payload.staff_id}",
+            )
+
+        insert_query = """
+            INSERT INTO doctor (staff_id, doctor_name, doctor_license_number)
+            VALUES (%s, %s, %s)
+            RETURNING *;
+        """
+        await cur.execute(
+            insert_query,
+            (payload.staff_id, payload.doctor_name, payload.doctor_license_number),
+        )
+        new_doc = await cur.fetchone()
+        return DoctorResponse(**new_doc)
+
+
+@router.put("/{doctor_id}", response_model=DoctorResponse)
+async def update_doctor(
+    doctor_id: int,
+    payload: DoctorUpdate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Update details of a doctor profile."""
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No update fields provided",
+        )
+
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Doctor with id {doctor_id} not found",
+            )
+
+        set_clauses = [f"{k} = %s" for k in update_data.keys()]
+        values = list(update_data.values())
+        values.append(doctor_id)
+
+        update_query = f"""
+            UPDATE doctor
+            SET {', '.join(set_clauses)}
+            WHERE doctor_id = %s
+            RETURNING *;
+        """
+        await cur.execute(update_query, tuple(values))
+        updated_doc = await cur.fetchone()
+        return DoctorResponse(**updated_doc)
+
 
