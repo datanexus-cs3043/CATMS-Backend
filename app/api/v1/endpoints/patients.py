@@ -160,4 +160,23 @@ async def update_patient(
         return PatientResponse(**updated_row)
 
 
+@router.delete("/{patient_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_patient(
+    patient_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Delete a patient record."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (patient_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Patient with id {patient_id} not found",
+            )
+
+        await cur.execute("DELETE FROM patient WHERE patient_id = %s;", (patient_id,))
+        return None
+
+
+
 
