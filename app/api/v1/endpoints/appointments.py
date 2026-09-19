@@ -9,6 +9,7 @@ from app.schemas.appointment import (
     AppointmentUpdate,
     AppointmentResponse,
     AppointmentDetailResponse,
+    ConsultationNoteCreate,
     ConsultationNoteResponse,
 )
 
@@ -187,6 +188,25 @@ async def update_appointment(
         await cur.execute(update_query, tuple(values))
         updated_row = await cur.fetchone()
         return AppointmentResponse(**updated_row)
+
+
+@router.delete("/{appointment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_appointment(
+    appointment_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Cancel and remove an appointment."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        await cur.execute("DELETE FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        return None
+
 
 
 
