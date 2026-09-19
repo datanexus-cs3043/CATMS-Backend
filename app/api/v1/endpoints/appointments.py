@@ -5,6 +5,7 @@ from psycopg import AsyncConnection
 
 from app.core.database import get_db
 from app.schemas.appointment import (
+    AppointmentCreate,
     AppointmentResponse,
     AppointmentDetailResponse,
     ConsultationNoteResponse,
@@ -90,4 +91,63 @@ async def get_appointment(
         appt_data = dict(appt)
         appt_data["consultation_notes"] = [ConsultationNoteResponse(**n) for n in notes]
         return AppointmentDetailResponse(**appt_data)
+
+
+@router.post("", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED)
+async def create_appointment(
+    payload: AppointmentCreate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Schedule and record a new clinic appointment."""
+    async with conn.cursor() as cur:
+        # Validate patient
+        await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (payload.patient_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Patient with id {payload.patient_id} does not exist",
+            )
+
+        # Validate doctor
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (payload.doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Doctor with id {payload.doctor_id} does not exist",
+            )
+
+        # Validate branch
+        await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Branch with id {payload.branch_id} does not exist",
+            )
+
+        insert_query = """
+            INSERT INTO appointment (
+                patient_id, doctor_id, branch_id, appointment_date,
+                start_time, end_time, appointment_type, created_by,
+                original_appointment_id, treatment_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING *;
+        """
+        await cur.execute(
+            insert_query,
+            (
+                payload.patient_id,
+                payload.doctor_id,
+                payload.branch_id,
+                payload.appointment_date,
+                payload.start_time,
+                payload.end_time,
+                payload.appointment_type,
+                payload.created_by,
+                payload.original_appointment_id,
+                payload.treatment_id,
+            ),
+        )
+        new_appt = await cur.fetchone()
+        return AppointmentResponse(**new_appt)
+
 
