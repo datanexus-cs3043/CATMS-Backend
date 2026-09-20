@@ -163,4 +163,3 @@ async def require_csrf(request: Request) -> None:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="CSRF validation failed: Missing or invalid X-CSRF-Token header."
             )
-
