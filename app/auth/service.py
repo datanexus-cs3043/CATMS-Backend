@@ -103,19 +103,18 @@ async def authenticate_user(
             )
         else:
             # 4. Check if user is associated with a Patient record
-            patient_row = None
-            if email or contact_details:
-                await cur.execute(
-                    """
-                    SELECT patient_id, branch_id
-                    FROM patient
-                    WHERE (email IS NOT NULL AND LOWER(email) = LOWER(%s))
-                       OR (contact_details IS NOT NULL AND contact_details = %s)
-                    LIMIT 1;
-                    """,
-                    (email or "", contact_details or "")
-                )
-                patient_row = await cur.fetchone()
+            await cur.execute(
+                """
+                SELECT patient_id, branch_id
+                FROM patient
+                WHERE user_id = %s
+                   OR (email IS NOT NULL AND LOWER(email) = LOWER(%s))
+                   OR (contact_details IS NOT NULL AND contact_details = %s)
+                LIMIT 1;
+                """,
+                (user_id, email or "", contact_details or "")
+            )
+            patient_row = await cur.fetchone()
 
             if patient_row:
                 auth_user = AuthUser(
@@ -213,19 +212,18 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
             )
 
         # Check Patient
-        patient_row = None
-        if email or contact_details:
-            await cur.execute(
-                """
-                SELECT patient_id, branch_id
-                FROM patient
-                WHERE (email IS NOT NULL AND LOWER(email) = LOWER(%s))
-                   OR (contact_details IS NOT NULL AND contact_details = %s)
-                LIMIT 1;
-                """,
-                (email or "", contact_details or "")
-            )
-            patient_row = await cur.fetchone()
+        await cur.execute(
+            """
+            SELECT patient_id, branch_id
+            FROM patient
+            WHERE user_id = %s
+               OR (email IS NOT NULL AND LOWER(email) = LOWER(%s))
+               OR (contact_details IS NOT NULL AND contact_details = %s)
+            LIMIT 1;
+            """,
+            (user_id, email or "", contact_details or "")
+        )
+        patient_row = await cur.fetchone()
 
         if patient_row:
             return AuthUser(
