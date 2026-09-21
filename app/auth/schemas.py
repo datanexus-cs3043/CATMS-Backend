@@ -40,6 +40,8 @@ class AuthUser(BaseModel):
 class LoginResponse(BaseModel):
     message: str = "Login successful"
     user: AuthUser
+    access_token: Optional[str] = None
+    token_type: Optional[str] = "bearer"
 
 
 class LogoutResponse(BaseModel):
