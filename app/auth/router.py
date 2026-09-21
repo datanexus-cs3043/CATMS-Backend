@@ -13,6 +13,7 @@ from app.auth.schemas import (
 )
 from app.auth.security import (
     create_access_token,
+    decode_access_token,
     generate_csrf_token,
 )
 from app.auth.service import authenticate_user, get_user_by_id
@@ -73,7 +74,9 @@ async def login(
 
     return LoginResponse(
         message="Login successful",
-        user=user
+        user=user,
+        access_token=access_token,
+        token_type="bearer",
     )
 
 
@@ -138,15 +141,20 @@ async def get_me(
 )
 async def get_csrf_token(request: Request):
     # If user is already logged in, bind token to user ID, otherwise guest
-    cookie_token = request.cookies.get(settings.COOKIE_NAME)
+    token = request.cookies.get(settings.COOKIE_NAME)
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1]
+
     user_id_str = "guest"
-    if cookie_token:
+    if token:
         try:
-            payload = get_current_user
-            user_id_str = "authenticated"
+            payload = decode_access_token(token)
+            user_id_str = str(payload.get("user_id", "authenticated"))
         except Exception:
             pass
 
-    token = generate_csrf_token(user_id_str)
-    return CSRFResponse(csrf_token=token)
+    csrf_token = generate_csrf_token(user_id_str)
+    return CSRFResponse(csrf_token=csrf_token)
 
