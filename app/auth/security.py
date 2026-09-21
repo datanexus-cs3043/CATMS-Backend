@@ -1,3 +1,4 @@
+import logging
 import time
 import hmac
 import hashlib
@@ -11,6 +12,8 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 import bcrypt
 
 from app.core.config import settings
+
+logger = logging.getLogger("medsync.auth.security")
 
 # Initialize Argon2id password hasher (RFC 9106 recommended parameters)
 ph = PasswordHasher(
@@ -59,9 +62,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         except Exception:
             return False
 
-    # Plain text check for development dummy data if any (not used in production)
-    # If the stored hash is raw string, compare safely using hmac.compare_digest
-    return hmac.compare_digest(plain_password, hashed_password)
+    # Plain-text check strictly restricted to development/testing environments
+    if settings.ENVIRONMENT.lower() in ("development", "dev", "test", "local"):
+        if hmac.compare_digest(plain_password, hashed_password):
+            logger.warning(
+                "Authentication succeeded using plain-text password fallback in development mode. "
+                "Please migrate stored passwords to Argon2id hashes."
+            )
+            return True
+
+    return False
 
 
 # ==========================================

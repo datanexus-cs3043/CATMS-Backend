@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "MedSync CATMS API"
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api"
+    ENVIRONMENT: str = "development"
     PORT: int = 8000
 
     # PostgreSQL Database Configuration
