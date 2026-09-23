@@ -111,7 +111,8 @@ CREATE TABLE patient (
     patient_type VARCHAR(100),
     contact_details VARCHAR(255),
     email VARCHAR(255),
-    address VARCHAR(500)
+    address VARCHAR(500),
+    user_id INTEGER NOT NULL REFERENCES user(user_id)
 );
 
 -- 12. Patient emergency contacts (Adithya)
