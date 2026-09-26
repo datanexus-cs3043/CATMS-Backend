@@ -27,3 +27,4 @@ CREATE INDEX idx_insurance_claim_policy_id ON insurance_claim(policy_id);
 CREATE INDEX idx_doctor_payment_doctor_id ON doctor_payment(doctor_id);
 CREATE INDEX idx_doctor_payment_appointment_id ON doctor_payment(appointment_id);
 CREATE INDEX idx_doctor_payment_invoice_item_id ON doctor_payment(invoice_item_id);
+CREATE INDEX idx_patient_user_id ON patient(user_id);
