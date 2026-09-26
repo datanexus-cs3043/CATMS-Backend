@@ -1,0 +1,264 @@
+from datetime import date
+from typing import List, Optional
+from fastapi import APIRouter, Depends, Query, HTTPException, status
+from psycopg import AsyncConnection
+
+from app.core.database import get_db
+from app.schemas.appointment import (
+    AppointmentCreate,
+    AppointmentUpdate,
+    AppointmentResponse,
+    AppointmentDetailResponse,
+    ConsultationNoteCreate,
+    ConsultationNoteResponse,
+)
+
+router = APIRouter(prefix="/appointments", tags=["Appointments"])
+
+
+@router.get("", response_model=List[AppointmentResponse])
+async def list_appointments(
+    skip: int = Query(0, ge=0, description="Offset for pagination"),
+    limit: int = Query(50, ge=1, le=100, description="Page size"),
+    doctor_id: Optional[int] = Query(None, description="Filter by doctor ID"),
+    patient_id: Optional[int] = Query(None, description="Filter by patient ID"),
+    branch_id: Optional[int] = Query(None, description="Filter by branch ID"),
+    appointment_date: Optional[date] = Query(None, description="Filter by appointment date"),
+    conn: AsyncConnection = Depends(get_db),
+):
+    """List appointments with optional filtering by doctor, patient, branch, or date."""
+    query = "SELECT * FROM appointment WHERE 1=1"
+    params = []
+
+    if doctor_id is not None:
+        query += " AND doctor_id = %s"
+        params.append(doctor_id)
+
+    if patient_id is not None:
+        query += " AND patient_id = %s"
+        params.append(patient_id)
+
+    if branch_id is not None:
+        query += " AND branch_id = %s"
+        params.append(branch_id)
+
+    if appointment_date is not None:
+        query += " AND appointment_date = %s"
+        params.append(appointment_date)
+
+    query += " ORDER BY appointment_date DESC, start_time DESC LIMIT %s OFFSET %s;"
+    params.extend([limit, skip])
+
+    async with conn.cursor() as cur:
+        await cur.execute(query, tuple(params))
+        rows = await cur.fetchall()
+        return [AppointmentResponse(**row) for row in rows]
+
+
+@router.get("/{appointment_id}", response_model=AppointmentDetailResponse)
+async def get_appointment(
+    appointment_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Retrieve full appointment details including doctor, patient, treatment, and consultation notes."""
+    async with conn.cursor() as cur:
+        query = """
+            SELECT 
+                a.*,
+                p.first_name || ' ' || p.last_name AS patient_name,
+                d.doctor_name,
+                b.branch_name,
+                t.treatment_name
+            FROM appointment a
+            JOIN patient p ON a.patient_id = p.patient_id
+            JOIN doctor d ON a.doctor_id = d.doctor_id
+            JOIN branch b ON a.branch_id = b.branch_id
+            LEFT JOIN treatment t ON a.treatment_id = t.treatment_id
+            WHERE a.appointment_id = %s;
+        """
+        await cur.execute(query, (appointment_id,))
+        appt = await cur.fetchone()
+        if not appt:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        await cur.execute(
+            "SELECT * FROM consultation_note WHERE appointment_id = %s ORDER BY created_at ASC;",
+            (appointment_id,),
+        )
+        notes = await cur.fetchall()
+
+        appt_data = dict(appt)
+        appt_data["consultation_notes"] = [ConsultationNoteResponse(**n) for n in notes]
+        return AppointmentDetailResponse(**appt_data)
+
+
+@router.post("", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED)
+async def create_appointment(
+    payload: AppointmentCreate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Schedule and record a new clinic appointment."""
+    async with conn.cursor() as cur:
+        # Validate patient
+        await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (payload.patient_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Patient with id {payload.patient_id} does not exist",
+            )
+
+        # Validate doctor
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (payload.doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Doctor with id {payload.doctor_id} does not exist",
+            )
+
+        # Validate branch
+        await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Branch with id {payload.branch_id} does not exist",
+            )
+
+        insert_query = """
+            INSERT INTO appointment (
+                patient_id, doctor_id, branch_id, appointment_date,
+                start_time, end_time, appointment_type, created_by,
+                original_appointment_id, treatment_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING *;
+        """
+        await cur.execute(
+            insert_query,
+            (
+                payload.patient_id,
+                payload.doctor_id,
+                payload.branch_id,
+                payload.appointment_date,
+                payload.start_time,
+                payload.end_time,
+                payload.appointment_type,
+                payload.created_by,
+                payload.original_appointment_id,
+                payload.treatment_id,
+            ),
+        )
+        new_appt = await cur.fetchone()
+        return AppointmentResponse(**new_appt)
+
+
+@router.put("/{appointment_id}", response_model=AppointmentResponse)
+async def update_appointment(
+    appointment_id: int,
+    payload: AppointmentUpdate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Reschedule or update details of an existing appointment."""
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No update fields provided",
+        )
+
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        set_clauses = [f"{k} = %s" for k in update_data.keys()]
+        values = list(update_data.values())
+        values.append(appointment_id)
+
+        update_query = f"""
+            UPDATE appointment
+            SET {', '.join(set_clauses)}
+            WHERE appointment_id = %s
+            RETURNING *;
+        """
+        await cur.execute(update_query, tuple(values))
+        updated_row = await cur.fetchone()
+        return AppointmentResponse(**updated_row)
+
+
+@router.delete("/{appointment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_appointment(
+    appointment_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Cancel and remove an appointment."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        await cur.execute("DELETE FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        return None
+
+
+@router.get("/{appointment_id}/notes", response_model=List[ConsultationNoteResponse])
+async def list_consultation_notes(
+    appointment_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """List consultation notes for a given appointment."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        await cur.execute(
+            "SELECT * FROM consultation_note WHERE appointment_id = %s ORDER BY created_at ASC;",
+            (appointment_id,),
+        )
+        rows = await cur.fetchall()
+        return [ConsultationNoteResponse(**row) for row in rows]
+
+
+@router.post(
+    "/{appointment_id}/notes",
+    response_model=ConsultationNoteResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_consultation_note(
+    appointment_id: int,
+    payload: ConsultationNoteCreate,
+    conn: AsyncConnection = Depends(get_db),
+):
+    """Add a clinical consultation note to an appointment."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Appointment with id {appointment_id} not found",
+            )
+
+        insert_query = """
+            INSERT INTO consultation_note (appointment_id, note_content)
+            VALUES (%s, %s)
+            RETURNING *;
+        """
+        await cur.execute(insert_query, (appointment_id, payload.note_content))
+        new_note = await cur.fetchone()
+        return ConsultationNoteResponse(**new_note)
+
+
+
+
+
