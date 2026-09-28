@@ -112,7 +112,7 @@ CREATE TABLE patient (
     contact_details VARCHAR(255),
     email VARCHAR(255),
     address VARCHAR(500),
-    user_id INTEGER NOT NULL REFERENCES user(user_id)
+    user_id INTEGER UNIQUE REFERENCES "user"(user_id) ON DELETE SET NULL
 );
 
 -- 12. Patient emergency contacts (Adithya)
