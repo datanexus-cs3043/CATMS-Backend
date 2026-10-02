@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-from app.auth.dependencies import get_current_user, require_csrf, require_role, verify_branch_access
+from app.auth.dependencies import require_csrf, require_role
 from app.auth.schemas import JWTPayload
+from app.auth.service import normalize_role
+from app.api.v1.endpoints._guards import check_branch_scope, database_mutation
 from app.core.database import get_db
 from app.schemas.staff import StaffCreate, StaffResponse, StaffUpdate
 
@@ -26,13 +28,25 @@ async def _get_staff(conn: AsyncConnection, staff_id: int) -> dict:
 
 
 def _check_branch_access(staff: dict, current_user: JWTPayload) -> None:
-    verify_branch_access(staff["branch_id"], current_user)
+    check_branch_scope(staff["branch_id"], current_user)
 
 
 def _check_manager_branch(branch_id: int, current_user: JWTPayload) -> None:
     if current_user.role.lower() != "admin" and current_user.branch_id != branch_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Branch managers can only manage staff in their assigned branch.")
+
+
+def _check_staff_management(payload: dict, current_user: JWTPayload, existing=None) -> None:
+    if current_user.role.lower() == "admin":
+        return
+    privileged = {"admin", "branch_manager"}
+    if existing and normalize_role(existing["role"], existing["staff_type"], False) in privileged:
+        raise HTTPException(403, "Only administrators can manage privileged staff.")
+    if normalize_role(payload.get("role"), payload.get("staff_type"), False) in privileged:
+        raise HTTPException(403, "Only administrators can assign privileged staff roles or types.")
+    if payload.get("users_logins_id") is not None or existing and {"users_logins_id", "email"} & payload.keys():
+        raise HTTPException(403, "Only administrators can change staff account links.")
 
 
 @router.get("", response_model=List[StaffResponse], summary="List staff")
@@ -76,7 +90,8 @@ async def create_staff(
     current_user: JWTPayload = Depends(require_role("admin", "branch_manager")),
 ):
     _check_manager_branch(payload.branch_id, current_user)
-    async with conn.cursor(row_factory=dict_row) as cur:
+    _check_staff_management(payload.model_dump(), current_user)
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))
         if not await cur.fetchone():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Branch does not exist")
@@ -106,6 +121,7 @@ async def update_staff(
     staff = await _get_staff(conn, staff_id)
     _check_branch_access(staff, current_user)
     update_data = payload.model_dump(exclude_unset=True)
+    _check_staff_management(update_data, current_user, staff)
     target_branch = update_data.get("branch_id", staff["branch_id"])
     _check_manager_branch(target_branch, current_user)
     if not update_data:
@@ -114,7 +130,7 @@ async def update_staff(
         update_data["email"] = str(update_data["email"])
     clauses = [f"{key} = %s" for key in update_data]
     values = list(update_data.values()) + [staff_id]
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             f"UPDATE staff SET {', '.join(clauses)} WHERE staff_id = %s RETURNING *;",
             tuple(values),
@@ -135,9 +151,11 @@ async def delete_staff(
 ):
     staff = await _get_staff(conn, staff_id)
     _check_branch_access(staff, current_user)
+    _check_manager_branch(staff["branch_id"], current_user)
+    _check_staff_management({}, current_user, staff)
     if current_user.staff_id == staff_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Cannot delete your own staff account.")
-    async with conn.cursor() as cur:
+    async with database_mutation(conn), conn.cursor() as cur:
         await cur.execute("DELETE FROM staff WHERE staff_id = %s;", (staff_id,))
     return None

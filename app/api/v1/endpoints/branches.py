@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-from app.auth.dependencies import get_current_user, require_csrf, require_role, verify_branch_access
+from app.auth.dependencies import require_csrf, require_role
+from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
 from app.auth.schemas import JWTPayload
 from app.core.database import get_db
 from app.schemas.branch import (
@@ -37,7 +38,12 @@ async def list_branches(
     current_user: JWTPayload = Depends(require_role("admin", "branch_manager")),
 ):
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute("SELECT * FROM branch ORDER BY branch_name ASC;")
+        if current_user.role.lower() == "admin":
+            await cur.execute("SELECT * FROM branch ORDER BY branch_name ASC;")
+        else:
+            check_branch_scope(current_user.branch_id, current_user)
+            await cur.execute("SELECT * FROM branch WHERE branch_id = %s ORDER BY branch_name ASC;",
+                              (current_user.branch_id,))
         rows = await cur.fetchall()
     return [BranchResponse(**row) for row in rows]
 
@@ -46,10 +52,10 @@ async def list_branches(
 async def get_branch(
     branch_id: int,
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(get_current_user),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     branch = await _get_branch(conn, branch_id)
-    verify_branch_access(branch_id, current_user)
+    check_branch_scope(branch_id, current_user)
     return BranchResponse(**branch)
 
 
@@ -65,7 +71,10 @@ async def create_branch(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin")),
 ):
-    async with conn.cursor(row_factory=dict_row) as cur:
+    # A manager must already belong to this branch, which does not exist yet.
+    if payload.manager_staff_id is not None:
+        raise HTTPException(422, "Create the branch first, then assign staff belonging to it.")
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """INSERT INTO branch (branch_name, location, contact_details, manager_staff_id)
                VALUES (%s, %s, %s, %s) RETURNING *;""",
@@ -88,18 +97,25 @@ async def update_branch(
     current_user: JWTPayload = Depends(require_role("admin", "branch_manager")),
 ):
     branch = await _get_branch(conn, branch_id)
-    verify_branch_access(branch_id, current_user)
+    check_branch_scope(branch_id, current_user)
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="No update fields provided")
+    if "manager_staff_id" in update_data and current_user.role.lower() != "admin":
+        raise HTTPException(403, "Only administrators can assign branch managers.")
     if "branch_name" in update_data:
         update_data["branch_name"] = update_data["branch_name"].strip()
     if "location" in update_data:
         update_data["location"] = update_data["location"].strip()
     clauses = [f"{key} = %s" for key in update_data]
     values = list(update_data.values()) + [branch_id]
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        if update_data.get("manager_staff_id") is not None:
+            await cur.execute("SELECT staff_id FROM staff WHERE staff_id = %s AND branch_id = %s;",
+                              (update_data["manager_staff_id"], branch_id))
+            if not await cur.fetchone():
+                raise HTTPException(422, "The manager must belong to this branch.")
         await cur.execute(
             f"UPDATE branch SET {', '.join(clauses)} WHERE branch_id = %s RETURNING *;",
             tuple(values),
@@ -119,7 +135,7 @@ async def delete_branch(
     current_user: JWTPayload = Depends(require_role("admin")),
 ):
     await _get_branch(conn, branch_id)
-    async with conn.cursor() as cur:
+    async with database_mutation(conn), conn.cursor() as cur:
         await cur.execute("DELETE FROM branch WHERE branch_id = %s;", (branch_id,))
     return None
 
@@ -128,10 +144,10 @@ async def delete_branch(
 async def list_branch_staff(
     branch_id: int,
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(get_current_user),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     await _get_branch(conn, branch_id)
-    verify_branch_access(branch_id, current_user)
+    check_branch_scope(branch_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT * FROM staff WHERE branch_id = %s ORDER BY last_name, first_name;",
@@ -145,10 +161,10 @@ async def list_branch_staff(
 async def list_branch_doctors(
     branch_id: int,
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(get_current_user),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     await _get_branch(conn, branch_id)
-    verify_branch_access(branch_id, current_user)
+    check_branch_scope(branch_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """SELECT d.doctor_id, d.staff_id, d.doctor_name,
@@ -169,10 +185,10 @@ async def list_branch_doctors(
 async def list_branch_appointments(
     branch_id: int,
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(get_current_user),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     await _get_branch(conn, branch_id)
-    verify_branch_access(branch_id, current_user)
+    check_branch_scope(branch_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """SELECT a.appointment_id, a.patient_id, a.doctor_id, a.branch_id,
