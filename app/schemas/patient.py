@@ -1,6 +1,6 @@
 from datetime import date
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EmergencyContactBase(BaseModel):
@@ -14,9 +14,16 @@ class EmergencyContactCreate(EmergencyContactBase):
 
 
 class EmergencyContactUpdate(BaseModel):
-    contact_name: Optional[str] = None
-    relationship: Optional[str] = None
-    phone: Optional[str] = None
+    contact_name: Optional[str] = Field(None, max_length=150)
+    relationship: Optional[str] = Field(None, max_length=100)
+    phone: Optional[str] = Field(None, max_length=50)
+
+    @field_validator("contact_name", "relationship", "phone", mode="before")
+    @classmethod
+    def validate_provided_required_fields(cls, value):
+        if value is None or isinstance(value, str) and not value.strip():
+            raise ValueError("Provided contact fields cannot be null or blank")
+        return value.strip() if isinstance(value, str) else value
 
 
 class EmergencyContactResponse(EmergencyContactBase):
