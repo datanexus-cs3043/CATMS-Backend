@@ -223,6 +223,40 @@ async def assign_specialty_to_doctor(
 
 
 # =========================================================================
+# DELETE /api/doctors/{doctor_id}/specialties/{specialty_id} (Admin + CSRF)
+# =========================================================================
+@router.delete(
+    "/{doctor_id}/specialties/{specialty_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Unassign specialty from doctor",
+    description="Removes a specialty assignment from a doctor. Admin only.",
+    dependencies=[Depends(require_csrf)],
+)
+async def unassign_specialty_from_doctor(
+    doctor_id: int,
+    specialty_id: int,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
+):
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"Doctor {doctor_id} not found")
+        await cur.execute(
+            "SELECT doctor_id FROM doctor_specialty WHERE doctor_id = %s AND specialty_id = %s;",
+            (doctor_id, specialty_id),
+        )
+        if not await cur.fetchone():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"Specialty {specialty_id} is not assigned to doctor {doctor_id}")
+        await cur.execute(
+            "DELETE FROM doctor_specialty WHERE doctor_id = %s AND specialty_id = %s;",
+            (doctor_id, specialty_id),
+        )
+    return None
+
+# =========================================================================
 # DELETE /api/doctors/{doctor_id}  (Admin only + CSRF)
 # =========================================================================
 @router.delete(
