@@ -12,6 +12,11 @@ class SpecialtyCreate(SpecialtyBase):
     pass
 
 
+class SpecialtyUpdate(BaseModel):
+    specialty_name: Optional[str] = None
+    description: Optional[str] = None
+
+
 class SpecialtyResponse(SpecialtyBase):
     specialty_id: int
 
