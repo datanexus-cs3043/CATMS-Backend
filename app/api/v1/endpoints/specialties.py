@@ -128,3 +128,4 @@ async def delete_specialty(
         await cur.execute("DELETE FROM doctor_specialty WHERE specialty_id = %s;", (specialty_id,))
         await cur.execute("DELETE FROM specialty WHERE specialty_id = %s;", (specialty_id,))
     return None
+
