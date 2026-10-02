@@ -1,14 +1,19 @@
 from datetime import date, time
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class BranchBase(BaseModel):
-    branch_name: str
-    location: str
-    contact_details: Optional[str] = None
+    branch_name: str = Field(min_length=1, max_length=150)
+    location: str = Field(min_length=1, max_length=255)
+    contact_details: Optional[str] = Field(None, max_length=255)
     manager_staff_id: Optional[int] = None
+
+    @field_validator("branch_name", "location", mode="before")
+    @classmethod
+    def trim_required_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class BranchCreate(BranchBase):
@@ -16,10 +21,17 @@ class BranchCreate(BranchBase):
 
 
 class BranchUpdate(BaseModel):
-    branch_name: Optional[str] = None
-    location: Optional[str] = None
-    contact_details: Optional[str] = None
+    branch_name: Optional[str] = Field(None, max_length=150)
+    location: Optional[str] = Field(None, max_length=255)
+    contact_details: Optional[str] = Field(None, max_length=255)
     manager_staff_id: Optional[int] = None
+
+    @field_validator("branch_name", "location", mode="before")
+    @classmethod
+    def validate_provided_required_fields(cls, value):
+        if value is None or isinstance(value, str) and not value.strip():
+            raise ValueError("Provided branch fields cannot be null or blank")
+        return value.strip() if isinstance(value, str) else value
 
 
 class BranchResponse(BranchBase):
