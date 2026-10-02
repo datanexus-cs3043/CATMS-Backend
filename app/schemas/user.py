@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class UserCreate(BaseModel):
@@ -8,14 +8,14 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=6, description="Plain text password (will be hashed with Argon2id)")
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
-    email: Optional[EmailStr] = None
+    email: Optional[str] = Field(None, max_length=255)
     contact_details: Optional[str] = Field(None, max_length=255)
 
 
 class UserUpdate(BaseModel):
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
-    email: Optional[EmailStr] = None
+    email: Optional[str] = Field(None, max_length=255)
     contact_details: Optional[str] = Field(None, max_length=255)
     password: Optional[str] = Field(None, min_length=6, description="Optional new password to update")
 
@@ -38,4 +38,3 @@ class LoginHistoryResponse(BaseModel):
     user_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
-
