@@ -7,6 +7,7 @@ from app.core.database import get_db
 from app.auth.dependencies import get_current_user, require_role, require_csrf
 from app.auth.schemas import JWTPayload
 from app.schemas.doctor import SpecialtyCreate, SpecialtyUpdate, SpecialtyResponse
+from app.api.v1.endpoints._guards import database_mutation
 
 router = APIRouter(prefix="/specialties", tags=["Specialties"])
 
@@ -58,7 +59,11 @@ async def create_specialty(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin")),
 ):
-    async with conn.cursor(row_factory=dict_row) as cur:
+    if not payload.specialty_name.strip() or len(payload.specialty_name.strip()) > 150:
+        raise HTTPException(422, "Specialty name must contain 1 to 150 characters.")
+    if payload.description is not None and len(payload.description) > 500:
+        raise HTTPException(422, "Specialty description cannot exceed 500 characters.")
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT specialty_id FROM specialty WHERE LOWER(specialty_name) = LOWER(%s);",
             (payload.specialty_name.strip(),),
@@ -91,11 +96,26 @@ async def update_specialty(
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update fields provided")
-    async with conn.cursor(row_factory=dict_row) as cur:
+    if "specialty_name" in update_data:
+        name = update_data["specialty_name"]
+        if name is None or not name.strip() or len(name.strip()) > 150:
+            raise HTTPException(422, "Specialty name must contain 1 to 150 characters.")
+        update_data["specialty_name"] = name.strip()
+    description = update_data.get("description")
+    if description is not None and len(description) > 500:
+        raise HTTPException(422, "Specialty description cannot exceed 500 characters.")
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT specialty_id FROM specialty WHERE specialty_id = %s;", (specialty_id,))
         if not await cur.fetchone():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                 detail=f"Specialty {specialty_id} not found")
+        if "specialty_name" in update_data:
+            await cur.execute(
+                "SELECT specialty_id FROM specialty WHERE LOWER(specialty_name) = LOWER(%s) AND specialty_id != %s;",
+                (update_data["specialty_name"], specialty_id),
+            )
+            if await cur.fetchone():
+                raise HTTPException(409, "A specialty with this name already exists.")
         set_clauses = [f"{k} = %s" for k in update_data]
         values = list(update_data.values()) + [specialty_id]
         await cur.execute(
@@ -119,7 +139,7 @@ async def delete_specialty(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin")),
 ):
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT specialty_id FROM specialty WHERE specialty_id = %s;", (specialty_id,))
         if not await cur.fetchone():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
@@ -128,4 +148,3 @@ async def delete_specialty(
         await cur.execute("DELETE FROM doctor_specialty WHERE specialty_id = %s;", (specialty_id,))
         await cur.execute("DELETE FROM specialty WHERE specialty_id = %s;", (specialty_id,))
     return None
-
