@@ -1,8 +1,12 @@
+from datetime import date
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from psycopg import AsyncConnection
+from psycopg.rows import dict_row
 
 from app.core.database import get_db
+from app.auth.dependencies import get_current_user, require_role, require_csrf
+from app.auth.schemas import JWTPayload
 from app.schemas.doctor import (
     DoctorCreate,
     DoctorUpdate,
@@ -10,6 +14,8 @@ from app.schemas.doctor import (
     DoctorDetailResponse,
     SpecialtyCreate,
     SpecialtyResponse,
+    DoctorAppointmentResponse,
+    DoctorAvailabilitySlot,
 )
 
 router = APIRouter(prefix="/doctors", tags=["Doctors"])
@@ -216,4 +222,140 @@ async def assign_specialty_to_doctor(
         return {"message": "Specialty linked to doctor successfully"}
 
 
+# =========================================================================
+# DELETE /api/doctors/{doctor_id}  (Admin only + CSRF)
+# =========================================================================
+@router.delete(
+    "/{doctor_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete doctor",
+    description="Removes a doctor profile. Admin only.",
+    dependencies=[Depends(require_csrf)],
+)
+async def delete_doctor(
+    doctor_id: int,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
+):
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"Doctor with id {doctor_id} not found")
+        await cur.execute("DELETE FROM doctor_specialty WHERE doctor_id = %s;", (doctor_id,))
+        await cur.execute("DELETE FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+    return None
 
+
+# =========================================================================
+# GET /api/doctors/{doctor_id}/appointments  (Staff or authenticated)
+# =========================================================================
+@router.get(
+    "/{doctor_id}/appointments",
+    response_model=List[DoctorAppointmentResponse],
+    summary="Get doctor appointments",
+    description="Returns all appointments assigned to a doctor.",
+)
+async def get_doctor_appointments(
+    doctor_id: int,
+    appointment_date: Optional[date] = Query(None, description="Filter by date (YYYY-MM-DD)"),
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
+):
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"Doctor with id {doctor_id} not found")
+        query = """
+            SELECT a.*,
+                   (p.first_name || ' ' || p.last_name) AS patient_name,
+                   b.branch_name,
+                   t.treatment_name
+            FROM appointment a
+            JOIN patient p ON a.patient_id = p.patient_id
+            JOIN branch b  ON a.branch_id  = b.branch_id
+            LEFT JOIN treatment t ON a.treatment_id = t.treatment_id
+            WHERE a.doctor_id = %s
+        """
+        params: list = [doctor_id]
+        if appointment_date:
+            query += " AND a.appointment_date = %s"
+            params.append(appointment_date)
+        query += " ORDER BY a.appointment_date DESC, a.start_time ASC;"
+        await cur.execute(query, tuple(params))
+        rows = await cur.fetchall()
+        return [DoctorAppointmentResponse(**r) for r in rows]
+
+
+# =========================================================================
+# GET /api/doctors/{doctor_id}/specialties
+# =========================================================================
+@router.get(
+    "/{doctor_id}/specialties",
+    response_model=List[SpecialtyResponse],
+    summary="Get doctor specialties",
+    description="Returns all specialties assigned to a doctor.",
+)
+async def get_doctor_specialties(
+    doctor_id: int,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
+):
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"Doctor with id {doctor_id} not found")
+        await cur.execute("""
+            SELECT sp.*
+            FROM specialty sp
+            JOIN doctor_specialty ds ON sp.specialty_id = ds.specialty_id
+            WHERE ds.doctor_id = %s
+            ORDER BY sp.specialty_name ASC;
+        """, (doctor_id,))
+        rows = await cur.fetchall()
+        return [SpecialtyResponse(**r) for r in rows]
+
+
+# =========================================================================
+# GET /api/doctors/{doctor_id}/availability
+# =========================================================================
+@router.get(
+    "/{doctor_id}/availability",
+    response_model=List[DoctorAvailabilitySlot],
+    summary="Get doctor availability",
+    description="Returns booked time slots per date for a doctor within a date range.",
+)
+async def get_doctor_availability(
+    doctor_id: int,
+    from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
+):
+    if to_date < from_date:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="to_date must be >= from_date")
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+        if not await cur.fetchone():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"Doctor with id {doctor_id} not found")
+        await cur.execute("""
+            SELECT appointment_date,
+                   TO_CHAR(start_time, 'HH24:MI') || '-' || TO_CHAR(end_time, 'HH24:MI') AS slot
+            FROM appointment
+            WHERE doctor_id = %s
+              AND appointment_date BETWEEN %s AND %s
+            ORDER BY appointment_date ASC, start_time ASC;
+        """, (doctor_id, from_date, to_date))
+        rows = await cur.fetchall()
+        slots_by_date: dict = {}
+        for row in rows:
+            d = row["appointment_date"]
+            slots_by_date.setdefault(d, []).append(row["slot"])
+        return [
+            DoctorAvailabilitySlot(appointment_date=d, booked_slots=slots)
+            for d, slots in sorted(slots_by_date.items())
+        ]
