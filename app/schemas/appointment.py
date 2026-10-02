@@ -11,6 +11,28 @@ class ConsultationNoteCreate(ConsultationNoteBase):
     pass
 
 
+class ConsultationNoteUpdate(BaseModel):
+    note_content: str
+
+
+class RescheduleRequest(BaseModel):
+    appointment_date: date
+    start_time: time
+    end_time: time
+    created_by: Optional[str] = None
+
+
+class EmergencyAppointmentCreate(BaseModel):
+    patient_id: int
+    doctor_id: int
+    branch_id: int
+    appointment_date: date
+    start_time: time
+    end_time: time
+    created_by: str
+    treatment_id: Optional[int] = None
+
+
 class ConsultationNoteResponse(ConsultationNoteBase):
     note_id: int
     appointment_id: int
