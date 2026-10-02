@@ -5,6 +5,7 @@ from psycopg.rows import dict_row
 
 from app.core.database import get_db
 from app.auth.dependencies import get_current_user, verify_patient_ownership, require_csrf
+from app.api.v1.endpoints._guards import check_branch_scope, database_mutation
 from app.auth.schemas import JWTPayload
 from app.schemas.appointment import AppointmentDetailResponse
 from app.schemas.patient import (
@@ -241,6 +242,17 @@ async def create_emergency_contact(
         return EmergencyContactResponse(**new_contact)
 
 
+async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_user: JWTPayload) -> None:
+    verify_patient_ownership(patient_id, current_user)
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT branch_id FROM patient WHERE patient_id = %s;", (patient_id,))
+        patient = await cur.fetchone()
+    if not patient:
+        raise HTTPException(404, f"Patient {patient_id} not found")
+    if current_user.user_type == "staff":
+        check_branch_scope(patient["branch_id"], current_user)
+
+
 # =========================================================================
 # 1. GET /api/patients/{patient_id}/appointments
 # =========================================================================
@@ -256,7 +268,7 @@ async def get_patient_appointments(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     # Verify authorization (Staff can view, Patient can only view their own)
-    verify_patient_ownership(patient_id, current_user)
+    await _check_patient_access(conn, patient_id, current_user)
 
     async with conn.cursor(row_factory=dict_row) as cur:
         # Check patient exists
@@ -268,7 +280,7 @@ async def get_patient_appointments(
             )
 
         query = """
-            SELECT 
+            SELECT
                 a.*,
                 (p.first_name || ' ' || p.last_name) AS patient_name,
                 d.doctor_name,
@@ -302,7 +314,7 @@ async def get_patient_invoices(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     # Verify authorization
-    verify_patient_ownership(patient_id, current_user)
+    await _check_patient_access(conn, patient_id, current_user)
 
     async with conn.cursor(row_factory=dict_row) as cur:
         # Check patient exists
@@ -314,7 +326,7 @@ async def get_patient_invoices(
             )
 
         query = """
-            SELECT 
+            SELECT
                 i.invoice_id,
                 i.appointment_id,
                 i.staff_id,
@@ -350,7 +362,7 @@ async def get_patient_insurance(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     # Verify authorization
-    verify_patient_ownership(patient_id, current_user)
+    await _check_patient_access(conn, patient_id, current_user)
 
     async with conn.cursor(row_factory=dict_row) as cur:
         # Check patient exists
@@ -363,7 +375,7 @@ async def get_patient_insurance(
 
         # Fetch policies
         policy_query = """
-            SELECT 
+            SELECT
                 p.policy_id,
                 p.patient_id,
                 p.provider_id,
@@ -387,7 +399,7 @@ async def get_patient_insurance(
 
         # Fetch coverages for these policies
         coverage_query = """
-            SELECT 
+            SELECT
                 c.coverage_id,
                 c.policy_id,
                 c.treatment_id,
@@ -436,7 +448,7 @@ async def update_emergency_contact(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
-    verify_patient_ownership(patient_id, current_user)
+    await _check_patient_access(conn, patient_id, current_user)
 
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data:
@@ -445,12 +457,12 @@ async def update_emergency_contact(
             detail="No update fields provided",
         )
 
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         # Verify contact exists for this patient
         await cur.execute(
             """
-            SELECT emergency_contact_id 
-            FROM emergency_contact 
+            SELECT emergency_contact_id
+            FROM emergency_contact
             WHERE emergency_contact_id = %s AND patient_id = %s;
             """,
             (contact_id, patient_id),
@@ -492,13 +504,13 @@ async def delete_emergency_contact(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
-    verify_patient_ownership(patient_id, current_user)
+    await _check_patient_access(conn, patient_id, current_user)
 
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT emergency_contact_id 
-            FROM emergency_contact 
+            SELECT emergency_contact_id
+            FROM emergency_contact
             WHERE emergency_contact_id = %s AND patient_id = %s;
             """,
             (contact_id, patient_id),
