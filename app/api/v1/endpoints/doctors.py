@@ -7,6 +7,7 @@ from psycopg.rows import dict_row
 from app.core.database import get_db
 from app.auth.dependencies import get_current_user, require_role, require_csrf
 from app.auth.schemas import JWTPayload
+from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
 from app.schemas.doctor import (
     DoctorCreate,
     DoctorUpdate,
@@ -238,7 +239,7 @@ async def unassign_specialty_from_doctor(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin")),
 ):
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
         if not await cur.fetchone():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
@@ -271,7 +272,7 @@ async def delete_doctor(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin")),
 ):
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
         if not await cur.fetchone():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
@@ -294,8 +295,14 @@ async def get_doctor_appointments(
     doctor_id: int,
     appointment_date: Optional[date] = Query(None, description="Filter by date (YYYY-MM-DD)"),
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(get_current_user),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
+    if current_user.user_type != "staff":
+        raise HTTPException(403, "Staff credentials required.")
+    if current_user.role.lower() == "doctor" and current_user.doctor_id != doctor_id:
+        raise HTTPException(403, "Doctors can only access their own appointment list.")
+    if current_user.role.lower() != "admin":
+        check_branch_scope(current_user.branch_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
         if not await cur.fetchone():
@@ -313,6 +320,9 @@ async def get_doctor_appointments(
             WHERE a.doctor_id = %s
         """
         params: list = [doctor_id]
+        if current_user.role.lower() != "admin":
+            query += " AND a.branch_id = %s"
+            params.append(current_user.branch_id)
         if appointment_date:
             query += " AND a.appointment_date = %s"
             params.append(appointment_date)
@@ -358,8 +368,8 @@ async def get_doctor_specialties(
 @router.get(
     "/{doctor_id}/availability",
     response_model=List[DoctorAvailabilitySlot],
-    summary="Get doctor availability",
-    description="Returns booked time slots per date for a doctor within a date range.",
+    summary="Get doctor booked slots",
+    description="Returns booked slots only; does not calculate working hours or free availability.",
 )
 async def get_doctor_availability(
     doctor_id: int,
@@ -382,6 +392,8 @@ async def get_doctor_availability(
             FROM appointment
             WHERE doctor_id = %s
               AND appointment_date BETWEEN %s AND %s
+              AND NOT EXISTS (SELECT 1 FROM appointment next_a
+                              WHERE next_a.original_appointment_id = appointment.appointment_id)
             ORDER BY appointment_date ASC, start_time ASC;
         """, (doctor_id, from_date, to_date))
         rows = await cur.fetchall()
