@@ -9,6 +9,7 @@ from app.auth.dependencies import get_current_user, require_role, require_csrf
 from app.auth.schemas import JWTPayload
 from app.auth.security import get_password_hash
 from app.schemas.user import UserCreate, UserUpdate, UserResponse, LoginHistoryResponse
+from app.api.v1.endpoints._guards import database_mutation
 
 logger = logging.getLogger("medsync.api.users")
 router = APIRouter()
@@ -94,7 +95,7 @@ async def create_user(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin")),
 ):
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         # Check if username is already taken
         await cur.execute(
             """
@@ -169,7 +170,11 @@ async def update_user(
             detail="Access forbidden: You can only update your own user profile.",
         )
 
-    async with conn.cursor(row_factory=dict_row) as cur:
+    # Legacy login resolution uses email/contact details as account-linking keys.
+    if current_user.role.lower() != "admin" and {"email", "contact_details"} & user_in.model_fields_set:
+        raise HTTPException(403, "Account-linking fields can only be changed by an administrator.")
+
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         # Verify user exists
         await cur.execute('SELECT user_id FROM "user" WHERE user_id = %s;', (user_id,))
         if not await cur.fetchone():
@@ -205,7 +210,7 @@ async def update_user(
             update_fields.append("last_name = %s")
             params.append(user_in.last_name)
 
-        if user_in.contact_details is not None:
+        if "contact_details" in user_in.model_fields_set:
             update_fields.append("contact_details = %s")
             params.append(user_in.contact_details)
 
@@ -263,8 +268,8 @@ async def delete_user(
             detail="Cannot delete your own administrative account.",
         )
 
-    async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute('SELECT user_id FROM "user" WHERE user_id = %s;', (user_id,))
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute('SELECT user_id FROM "user" WHERE user_id = %s FOR UPDATE;', (user_id,))
         if not await cur.fetchone():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -322,4 +327,3 @@ async def get_user_login_history(
         )
         history = await cur.fetchall()
         return history
-
