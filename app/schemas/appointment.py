@@ -1,6 +1,6 @@
 from datetime import date, time, datetime
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ConsultationNoteBase(BaseModel):
@@ -12,14 +12,28 @@ class ConsultationNoteCreate(ConsultationNoteBase):
 
 
 class ConsultationNoteUpdate(BaseModel):
-    note_content: str
+    note_content: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_note(self):
+        if not self.note_content.strip():
+            raise ValueError("Consultation note cannot be blank")
+        return self
 
 
 class RescheduleRequest(BaseModel):
     appointment_date: date
     start_time: time
     end_time: time
-    created_by: Optional[str] = None
+    created_by: Optional[str] = Field(None, deprecated=True, description="Ignored; derived from authenticated user")
+
+    @model_validator(mode="after")
+    def validate_times(self):
+        if self.start_time.tzinfo is not None or self.end_time.tzinfo is not None:
+            raise ValueError("Appointment times must be local times without a timezone")
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
 
 
 class EmergencyAppointmentCreate(BaseModel):
@@ -29,8 +43,16 @@ class EmergencyAppointmentCreate(BaseModel):
     appointment_date: date
     start_time: time
     end_time: time
-    created_by: str
+    created_by: Optional[str] = Field(None, deprecated=True, description="Ignored; derived from authenticated user")
     treatment_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_times(self):
+        if self.start_time.tzinfo is not None or self.end_time.tzinfo is not None:
+            raise ValueError("Appointment times must be local times without a timezone")
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
 
 
 class ConsultationNoteResponse(ConsultationNoteBase):
