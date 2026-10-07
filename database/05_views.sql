@@ -128,3 +128,43 @@ JOIN patient p ON p.patient_id = a.patient_id
 JOIN branch b ON b.branch_id = a.branch_id
 JOIN v_invoice_totals vit ON vit.invoice_id = i.invoice_id
 WHERE i.balance > 0;
+
+
+CREATE OR REPLACE VIEW v_treatment_category_usage AS
+SELECT tc.category_id,
+       tc.category_name,
+       t.treatment_id,
+       t.treatment_name,
+       i.invoice_date,
+       a.branch_id,
+       COALESCE(SUM(ii.quantity), 0)::BIGINT AS usage_count,
+       COALESCE(SUM(ii.quantity * ii.unitprice), 0)::NUMERIC(12, 2) AS treatment_revenue
+FROM treatment_category tc
+JOIN treatment t ON t.category_id = tc.category_id
+LEFT JOIN invoice_item ii ON ii.treatment_id = t.treatment_id
+LEFT JOIN invoice i ON i.invoice_id = ii.invoice_id
+LEFT JOIN appointment a ON a.appointment_id = i.appointment_id
+GROUP BY tc.category_id, tc.category_name, t.treatment_id,
+         t.treatment_name, i.invoice_date, a.branch_id;
+
+CREATE OR REPLACE VIEW v_insurance_vs_out_of_pocket AS
+WITH claim_totals AS (
+    SELECT c.invoice_id,
+           SUM(c.claim_amount)::NUMERIC(12, 2) AS insurance_claimed_amount,
+           SUM(COALESCE(c.approved_amount, 0))::NUMERIC(12, 2) AS insurance_approved_amount
+    FROM insurance_claim c
+    GROUP BY c.invoice_id
+)
+SELECT i.invoice_id,
+       a.patient_id,
+       a.branch_id,
+       i.invoice_date,
+       vit.billed_amount AS invoiced_amount,
+       COALESCE(ct.insurance_claimed_amount, 0)::NUMERIC(12, 2) AS insurance_claimed_amount,
+       COALESCE(ct.insurance_approved_amount, 0)::NUMERIC(12, 2) AS insurance_approved_amount,
+       i.amount_paid AS out_of_pocket_paid,
+       i.balance AS outstanding_amount
+FROM invoice i
+JOIN appointment a ON a.appointment_id = i.appointment_id
+JOIN v_invoice_totals vit ON vit.invoice_id = i.invoice_id
+LEFT JOIN claim_totals ct ON ct.invoice_id = i.invoice_id;
