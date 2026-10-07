@@ -95,3 +95,36 @@ FROM invoice i
 LEFT JOIN invoice_item ii ON ii.invoice_id = i.invoice_id
 GROUP BY i.invoice_id, i.appointment_id, i.invoice_date,
          i.amount_paid, i.balance, i.status;
+
+
+CREATE OR REPLACE VIEW v_doctor_revenue AS
+SELECT d.doctor_id,
+       d.doctor_name,
+       a.branch_id,
+       COUNT(DISTINCT a.appointment_id) AS appointment_count,
+       COUNT(DISTINCT i.invoice_id) AS invoice_count,
+       COALESCE(SUM(vit.billed_amount), 0)::NUMERIC(12, 2) AS billed_revenue,
+       COALESCE(SUM(i.amount_paid), 0)::NUMERIC(12, 2) AS collected_revenue
+FROM doctor d
+LEFT JOIN appointment a ON a.doctor_id = d.doctor_id
+LEFT JOIN invoice i ON i.appointment_id = a.appointment_id
+LEFT JOIN v_invoice_totals vit ON vit.invoice_id = i.invoice_id
+GROUP BY d.doctor_id, d.doctor_name, a.branch_id;
+
+CREATE OR REPLACE VIEW v_outstanding_balances AS
+SELECT i.invoice_id,
+       a.patient_id,
+       p.first_name || ' ' || p.last_name AS patient_name,
+       a.branch_id,
+       b.branch_name,
+       i.invoice_date,
+       vit.billed_amount,
+       i.amount_paid,
+       i.balance,
+       i.status
+FROM invoice i
+JOIN appointment a ON a.appointment_id = i.appointment_id
+JOIN patient p ON p.patient_id = a.patient_id
+JOIN branch b ON b.branch_id = a.branch_id
+JOIN v_invoice_totals vit ON vit.invoice_id = i.invoice_id
+WHERE i.balance > 0;
