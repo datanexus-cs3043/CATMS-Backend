@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     staff,
     treatment_categories,
     treatments,
+    appointment_treatments,
 )
 from app.auth.router import router as auth_router
 
@@ -26,3 +27,4 @@ api_router.include_router(branches.router)
 api_router.include_router(staff.router)
 api_router.include_router(treatment_categories.router)
 api_router.include_router(treatments.router)
+api_router.include_router(appointment_treatments.router)
