@@ -6,8 +6,8 @@ Python FastAPI REST API backend and PostgreSQL database scripts for **MedSync / 
 
 - **Language & Runtime**: Python 3.11+
 - **Framework**: FastAPI (`uvicorn` ASGI server)
-- **Database Engine**: PostgreSQL 16+ (Hosted on Neon Cloud / local PostgreSQL)
-- **Data Access**: `asyncpg` / `psycopg2`
+- **Database Engine**: PostgreSQL hosted on Neon
+- **Data Access**: psycopg 3 with an asynchronous connection pool (`psycopg_pool`)
 - **Containerization**: Docker & Docker Compose
 
 ## Repository Structure
@@ -17,7 +17,7 @@ CATMS-Backend/
 ├── app/             # FastAPI application
 │   ├── __init__.py
 │   └── main.py      # Entry point & base routes
-├── database/        # 10-step sequential SQL scripts pipeline (01 to 10)
+├── database/        # Numbered SQL files (01 to 10), organized for database review and evaluation
 ├── compose.yaml     # Multi-container Docker Compose setup
 ├── Dockerfile       # Container build definition
 ├── requirements.txt # Python dependencies
@@ -47,6 +47,8 @@ CATMS-Backend/
    cp .env.example .env
    ```
 
+   Set `DATABASE_URL` to the Neon connection string, including its SSL settings, and configure the authentication secrets in your local `.env`. Do not commit credentials.
+
 4. Run FastAPI development server with hot-reload:
    ```bash
    uvicorn app.main:app --reload --port 8000
@@ -56,9 +58,13 @@ The API will be available at `http://localhost:8000` (interactive documentation 
 
 ### Option 2: Docker Compose
 
+Keep `CATMS-Frontend` beside `CATMS-Backend` in the same parent directory, and configure the backend `.env` as described above. Run this command from `CATMS-Backend`:
+
 ```bash
 docker compose up --build
 ```
+
+Compose runs the backend and frontend containers; the database remains hosted on Neon.
 
 ## Central Documentation
 

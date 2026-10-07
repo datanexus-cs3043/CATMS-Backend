@@ -1,6 +1,6 @@
 from datetime import date
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EmergencyContactBase(BaseModel):
@@ -11,6 +11,19 @@ class EmergencyContactBase(BaseModel):
 
 class EmergencyContactCreate(EmergencyContactBase):
     pass
+
+
+class EmergencyContactUpdate(BaseModel):
+    contact_name: Optional[str] = Field(None, max_length=150)
+    relationship: Optional[str] = Field(None, max_length=100)
+    phone: Optional[str] = Field(None, max_length=50)
+
+    @field_validator("contact_name", "relationship", "phone", mode="before")
+    @classmethod
+    def validate_provided_required_fields(cls, value):
+        if value is None or isinstance(value, str) and not value.strip():
+            raise ValueError("Provided contact fields cannot be null or blank")
+        return value.strip() if isinstance(value, str) else value
 
 
 class EmergencyContactResponse(EmergencyContactBase):
@@ -57,3 +70,42 @@ class PatientResponse(PatientBase):
 class PatientDetailResponse(PatientResponse):
     branch_name: Optional[str] = None
     emergency_contacts: List[EmergencyContactResponse] = []
+
+
+class PatientInvoiceResponse(BaseModel):
+    invoice_id: int
+    appointment_id: Optional[int] = None
+    staff_id: Optional[int] = None
+    invoice_date: Optional[date] = None
+    amount_paid: Optional[float] = None
+    balance: Optional[float] = None
+    status: Optional[str] = None
+    doctor_name: Optional[str] = None
+    appointment_date: Optional[date] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PatientInsuranceCoverageResponse(BaseModel):
+    coverage_id: int
+    policy_id: int
+    treatment_id: int
+    treatment_name: Optional[str] = None
+    coverage_percentage: Optional[float] = None
+    maximum_amount: Optional[float] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PatientInsurancePolicyResponse(BaseModel):
+    policy_id: int
+    patient_id: int
+    provider_id: Optional[int] = None
+    provider_name: Optional[str] = None
+    policy_number: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    status: Optional[str] = None
+    coverages: List[PatientInsuranceCoverageResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)
