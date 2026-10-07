@@ -10,3 +10,18 @@ DROP VIEW IF EXISTS v_branch_daily_appointment_summary;
 
 ALTER TABLE appointment
     ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'Scheduled';
+
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_appointment_status'
+          AND conrelid = 'appointment'::regclass
+    ) THEN
+        ALTER TABLE appointment
+            ADD CONSTRAINT ck_appointment_status
+            CHECK (status IN ('Scheduled', 'Completed', 'Cancelled'));
+    END IF;
+END;
+$$;
