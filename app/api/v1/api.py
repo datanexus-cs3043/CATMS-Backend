@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     treatment_categories,
     treatments,
     appointment_treatments,
+    invoices,
 )
 from app.auth.router import router as auth_router
 
@@ -28,3 +29,4 @@ api_router.include_router(staff.router)
 api_router.include_router(treatment_categories.router)
 api_router.include_router(treatments.router)
 api_router.include_router(appointment_treatments.router)
+api_router.include_router(invoices.router)
