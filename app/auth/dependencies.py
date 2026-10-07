@@ -178,3 +178,14 @@ async def require_csrf(request: Request) -> None:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="CSRF validation failed: Missing or invalid X-CSRF-Token header."
             )
+
+
+async def require_session_csrf(
+    request: Request,
+    current_user: JWTPayload = Depends(get_current_user),
+) -> None:
+    """Require a signed CSRF token belonging to the currently authenticated account."""
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        csrf_token = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken")
+        if not verify_csrf_token(csrf_token, expected_user_identifier=str(current_user.user_id)):
+            raise HTTPException(403, "CSRF validation failed: Token does not match the current account.")
