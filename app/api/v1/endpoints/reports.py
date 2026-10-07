@@ -12,6 +12,9 @@ from app.schemas.reports import (
     AppointmentSummaryResponse,
     AppointmentTypeSummary,
     DoctorRevenueResponse,
+    InsuranceComparisonResponse,
+    OutstandingBalanceResponse,
+    TreatmentCategoryReportResponse,
 )
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
@@ -79,3 +82,89 @@ async def doctor_revenue(
             params,
         )
         return [DoctorRevenueResponse(**row) for row in await cur.fetchall()]
+
+
+@router.get("/outstanding-balances", response_model=List[OutstandingBalanceResponse])
+async def outstanding_balances(
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
+):
+    scope, params = _report_scope(current_user, "a.branch_id")
+    scope = f"{scope} AND i.balance > 0" if scope else " WHERE i.balance > 0"
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            f"""SELECT i.invoice_id, a.patient_id,
+                       p.first_name || ' ' || p.last_name AS patient_name,
+                       i.invoice_date, i.balance, i.status
+                FROM invoice i
+                JOIN appointment a ON a.appointment_id = i.appointment_id
+                JOIN patient p ON p.patient_id = a.patient_id{scope}
+                ORDER BY i.balance DESC, i.invoice_date ASC;""",
+            params,
+        )
+        return [OutstandingBalanceResponse(**row) for row in await cur.fetchall()]
+
+
+@router.get(
+    "/treatments-by-category",
+    response_model=List[TreatmentCategoryReportResponse],
+)
+async def treatments_by_category(
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
+):
+    scope, params = _report_scope(current_user, "a.branch_id")
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            f"""SELECT tc.category_id, tc.category_name,
+                       COUNT(DISTINCT t.treatment_id) AS treatment_count,
+                       COALESCE(SUM(ii.quantity), 0) AS usage_count,
+                       COALESCE(SUM(ii.quantity * ii.unitprice), 0) AS treatment_revenue
+                FROM treatment_category tc
+                JOIN treatment t ON t.category_id = tc.category_id
+                LEFT JOIN invoice_item ii ON ii.treatment_id = t.treatment_id
+                LEFT JOIN invoice i ON i.invoice_id = ii.invoice_id
+                LEFT JOIN appointment a ON a.appointment_id = i.appointment_id
+                {scope}
+                GROUP BY tc.category_id, tc.category_name
+                ORDER BY treatment_revenue DESC, tc.category_name ASC;""",
+            params,
+        )
+        return [TreatmentCategoryReportResponse(**row) for row in await cur.fetchall()]
+
+
+@router.get(
+    "/insurance-vs-out-of-pocket",
+    response_model=InsuranceComparisonResponse,
+)
+async def insurance_vs_out_of_pocket(
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
+):
+    scope, params = _report_scope(current_user, "a.branch_id")
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            f"""WITH scoped_invoices AS (
+                    SELECT i.invoice_id, i.amount_paid, i.balance
+                    FROM invoice i
+                    JOIN appointment a ON a.appointment_id = i.appointment_id{scope}
+                ),
+                claim_totals AS (
+                    SELECT c.invoice_id, SUM(c.approved_amount) AS approved_amount
+                    FROM insurance_claim c
+                    JOIN scoped_invoices si ON si.invoice_id = c.invoice_id
+                    GROUP BY c.invoice_id
+                )
+                SELECT COALESCE(SUM(si.amount_paid + si.balance), 0) AS invoiced_amount,
+                       COALESCE(SUM(ct.approved_amount), 0) AS insurance_approved_amount,
+                       COALESCE(SUM(si.amount_paid), 0) AS patient_paid_amount,
+                       GREATEST(
+                           COALESCE(SUM(si.amount_paid), 0) -
+                           COALESCE(SUM(ct.approved_amount), 0), 0
+                       ) AS out_of_pocket_amount,
+                       COALESCE(SUM(si.balance), 0) AS outstanding_amount
+                FROM scoped_invoices si
+                LEFT JOIN claim_totals ct ON ct.invoice_id = si.invoice_id;""",
+            params,
+        )
+        return InsuranceComparisonResponse(**(await cur.fetchone()))
