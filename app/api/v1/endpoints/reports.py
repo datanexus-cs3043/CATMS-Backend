@@ -4,8 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-from app.api.v1.endpoints._guards import STAFF_ROLES
-from app.auth.dependencies import get_current_user, require_role
+from app.auth.dependencies import require_role
 from app.auth.schemas import JWTPayload
 from app.core.database import get_db
 from app.schemas.reports import (
@@ -18,11 +17,12 @@ from app.schemas.reports import (
 )
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+REPORT_ROLES = ("admin", "branch_manager")
 
 
 def _report_scope(current_user: JWTPayload, column: str) -> tuple[str, list[int]]:
-    if current_user.user_type != "staff" or current_user.role.lower() not in STAFF_ROLES:
-        raise HTTPException(403, "Staff credentials required for reports.")
+    if current_user.user_type != "staff" or current_user.role.lower() not in REPORT_ROLES:
+        raise HTTPException(403, "Management credentials required for reports.")
     if current_user.role.lower() == "admin":
         return "", []
     if current_user.branch_id is None:
@@ -36,7 +36,7 @@ def _report_scope(current_user: JWTPayload, column: str) -> tuple[str, list[int]
 )
 async def appointments_summary(
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
+    current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
     scope, params = _report_scope(current_user, "a.branch_id")
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -59,7 +59,7 @@ async def appointments_summary(
 @router.get("/doctor-revenue", response_model=List[DoctorRevenueResponse])
 async def doctor_revenue(
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
+    current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
     scope, params = _report_scope(current_user, "a.branch_id")
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -87,7 +87,7 @@ async def doctor_revenue(
 @router.get("/outstanding-balances", response_model=List[OutstandingBalanceResponse])
 async def outstanding_balances(
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
+    current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
     scope, params = _report_scope(current_user, "a.branch_id")
     scope = f"{scope} AND i.balance > 0" if scope else " WHERE i.balance > 0"
@@ -111,7 +111,7 @@ async def outstanding_balances(
 )
 async def treatments_by_category(
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
+    current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
     scope, params = _report_scope(current_user, "a.branch_id")
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -139,8 +139,9 @@ async def treatments_by_category(
 )
 async def insurance_vs_out_of_pocket(
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
+    current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
+    """Compare declared invoice payments and claim approvals, not insurer cash receipts."""
     scope, params = _report_scope(current_user, "a.branch_id")
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -158,10 +159,7 @@ async def insurance_vs_out_of_pocket(
                 SELECT COALESCE(SUM(si.amount_paid + si.balance), 0) AS invoiced_amount,
                        COALESCE(SUM(ct.approved_amount), 0) AS insurance_approved_amount,
                        COALESCE(SUM(si.amount_paid), 0) AS patient_paid_amount,
-                       GREATEST(
-                           COALESCE(SUM(si.amount_paid), 0) -
-                           COALESCE(SUM(ct.approved_amount), 0), 0
-                       ) AS out_of_pocket_amount,
+                       COALESCE(SUM(si.amount_paid), 0) AS out_of_pocket_amount,
                        COALESCE(SUM(si.balance), 0) AS outstanding_amount
                 FROM scoped_invoices si
                 LEFT JOIN claim_totals ct ON ct.invoice_id = si.invoice_id;""",
