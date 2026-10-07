@@ -17,6 +17,14 @@ class InsurancePolicyBase(BaseModel):
     def trim_status(cls, value):
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("end_date")
+    @classmethod
+    def validate_date_range(cls, value, info):
+        start_date = info.data.get("start_date")
+        if start_date is not None and value < start_date:
+            raise ValueError("end_date must be on or after start_date")
+        return value
+
 
 class InsurancePolicyCreate(InsurancePolicyBase):
     pass
