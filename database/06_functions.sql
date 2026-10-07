@@ -289,3 +289,86 @@ BEGIN
     RETURN NULL;
 END;
 $$;
+
+
+CREATE OR REPLACE FUNCTION fn_validate_insurance_claim()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_patient_id INTEGER;
+    v_invoice_date DATE;
+    v_policy insurance_policy%ROWTYPE;
+    v_invoice_total NUMERIC(12, 2);
+BEGIN
+    SELECT a.patient_id, i.invoice_date
+      INTO v_patient_id, v_invoice_date
+      FROM invoice i
+      JOIN appointment a ON a.appointment_id = i.appointment_id
+     WHERE i.invoice_id = NEW.invoice_id;
+    SELECT * INTO v_policy
+      FROM insurance_policy
+     WHERE policy_id = NEW.policy_id;
+
+    IF v_policy.policy_id IS NULL OR v_policy.patient_id <> v_patient_id THEN
+        RAISE EXCEPTION 'Claim policy must belong to the patient on the invoice'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF v_policy.status <> 'Active'
+       OR v_invoice_date < v_policy.start_date
+       OR v_invoice_date > v_policy.end_date THEN
+        RAISE EXCEPTION 'Insurance policy is not active on the invoice date'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    SELECT COALESCE(SUM(ii.quantity * ii.unitprice), i.amount_paid + i.balance)
+      INTO v_invoice_total
+      FROM invoice i
+      LEFT JOIN invoice_item ii ON ii.invoice_id = i.invoice_id
+     WHERE i.invoice_id = NEW.invoice_id
+     GROUP BY i.invoice_id, i.amount_paid, i.balance;
+    IF NEW.claim_amount IS NULL OR NEW.approved_amount IS NULL
+       OR NEW.claim_amount < 0 OR NEW.approved_amount < 0
+       OR NEW.approved_amount > NEW.claim_amount
+       OR NEW.claim_amount > v_invoice_total THEN
+        RAISE EXCEPTION 'Insurance claim amounts are outside the invoice amount'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION fn_validate_doctor_payment()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_appointment_doctor INTEGER;
+    v_invoice_id INTEGER;
+BEGIN
+    SELECT doctor_id INTO v_appointment_doctor
+      FROM appointment
+     WHERE appointment_id = NEW.appointment_id;
+    IF v_appointment_doctor IS DISTINCT FROM NEW.doctor_id THEN
+        RAISE EXCEPTION 'Doctor payment must reference the doctor assigned to the appointment'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.doctor_payment <= 0 THEN
+        RAISE EXCEPTION 'Doctor compensation must be greater than zero'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NEW.invoice_item_id IS NOT NULL THEN
+        SELECT i.invoice_id INTO v_invoice_id
+          FROM invoice_item ii
+          JOIN invoice i ON i.invoice_id = ii.invoice_id
+         WHERE ii.invoice_item_id = NEW.invoice_item_id
+           AND i.appointment_id = NEW.appointment_id;
+        IF v_invoice_id IS NULL THEN
+            RAISE EXCEPTION 'Doctor payment invoice item must belong to the appointment invoice'
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
