@@ -65,7 +65,7 @@ async def authenticate_user(
         user_name = user_row["username"]
         email = user_row.get("email")
 
-        # 3. Check if user is associated with a Staff record
+        # 3. Resolve staff ownership through the existing account link, not email.
         await cur.execute(
             """
             SELECT 
@@ -77,10 +77,10 @@ async def authenticate_user(
             FROM staff s
             LEFT JOIN doctor d ON d.staff_id = s.staff_id
             LEFT JOIN users_logins ul ON ul.users_logins_id = s.users_logins_id
-            WHERE ul.user_id = %s OR (s.email IS NOT NULL AND LOWER(s.email) = LOWER(%s))
+            WHERE ul.user_id = %s
             LIMIT 1;
             """,
-            (user_id, email or "")
+            (user_id,)
         )
         staff_row = await cur.fetchone()
 
@@ -174,10 +174,10 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
             FROM staff s
             LEFT JOIN doctor d ON d.staff_id = s.staff_id
             LEFT JOIN users_logins ul ON ul.users_logins_id = s.users_logins_id
-            WHERE ul.user_id = %s OR (s.email IS NOT NULL AND LOWER(s.email) = LOWER(%s))
+            WHERE ul.user_id = %s
             LIMIT 1;
             """,
-            (user_id, email or "")
+            (user_id,)
         )
         staff_row = await cur.fetchone()
 
