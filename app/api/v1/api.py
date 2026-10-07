@@ -1,5 +1,15 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import health, patients, doctors, appointments, users, specialties, branches, staff
+from app.api.v1.endpoints import (
+    health,
+    patients,
+    doctors,
+    appointments,
+    users,
+    specialties,
+    branches,
+    staff,
+    treatment_categories,
+)
 from app.auth.router import router as auth_router
 
 api_router = APIRouter()
@@ -13,3 +23,4 @@ api_router.include_router(appointments.notes_router)
 api_router.include_router(specialties.router)
 api_router.include_router(branches.router)
 api_router.include_router(staff.router)
+api_router.include_router(treatment_categories.router)
