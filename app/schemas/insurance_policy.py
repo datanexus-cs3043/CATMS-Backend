@@ -38,9 +38,11 @@ class InsurancePolicyUpdate(BaseModel):
     end_date: Optional[date] = None
     status: Optional[str] = Field(None, min_length=1, max_length=100)
 
-    @field_validator("status", mode="before")
+    @field_validator("patient_id", "provider_id", "policy_number", "start_date", "end_date", "status", mode="before")
     @classmethod
-    def trim_status(cls, value):
+    def validate_required_fields(cls, value):
+        if value is None:
+            raise ValueError("Provided insurance policy fields cannot be null")
         return value.strip() if isinstance(value, str) else value
 
 

@@ -1,6 +1,6 @@
 from datetime import date, time, datetime
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ConsultationNoteBase(BaseModel):
@@ -8,7 +8,14 @@ class ConsultationNoteBase(BaseModel):
 
 
 class ConsultationNoteCreate(ConsultationNoteBase):
-    pass
+    note_content: str = Field(min_length=1)
+
+    @field_validator("note_content")
+    @classmethod
+    def validate_note(cls, value):
+        if not value.strip():
+            raise ValueError("Consultation note cannot be blank")
+        return value
 
 
 class ConsultationNoteUpdate(BaseModel):

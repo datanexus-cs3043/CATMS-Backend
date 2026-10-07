@@ -35,9 +35,11 @@ class InsuranceClaimUpdate(BaseModel):
     )
     status: Optional[str] = Field(None, min_length=1, max_length=100)
 
-    @field_validator("status", mode="before")
+    @field_validator("invoice_id", "policy_id", "claim_date", "claim_amount", "approved_amount", "status", mode="before")
     @classmethod
-    def trim_status(cls, value):
+    def validate_required_fields(cls, value):
+        if value is None:
+            raise ValueError("Provided insurance claim fields cannot be null")
         return value.strip() if isinstance(value, str) else value
 
 

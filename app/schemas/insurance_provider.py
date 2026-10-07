@@ -24,6 +24,8 @@ class InsuranceProviderUpdate(BaseModel):
     @field_validator("provider_name", mode="before")
     @classmethod
     def trim_provider_name(cls, value):
+        if value is None:
+            raise ValueError("Provided provider name cannot be null")
         return value.strip() if isinstance(value, str) else value
 
 

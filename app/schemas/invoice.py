@@ -30,9 +30,11 @@ class InvoiceUpdate(BaseModel):
     balance: Optional[Decimal] = Field(None, ge=0, max_digits=10, decimal_places=2)
     status: Optional[str] = Field(None, min_length=1, max_length=100)
 
-    @field_validator("status", mode="before")
+    @field_validator("staff_id", "invoice_date", "amount_paid", "balance", "status", mode="before")
     @classmethod
-    def trim_status(cls, value):
+    def validate_required_fields(cls, value):
+        if value is None:
+            raise ValueError("Provided invoice fields cannot be null")
         return value.strip() if isinstance(value, str) else value
 
 
@@ -49,7 +51,7 @@ class InvoiceResponse(InvoiceBase):
 class InvoiceItemBase(BaseModel):
     treatment_id: int = Field(gt=0)
     quantity: int = Field(default=1, gt=0)
-    unitprice: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
+    unitprice: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
     description: Optional[str] = Field(None, max_length=255)
 
 
@@ -60,8 +62,15 @@ class InvoiceItemCreate(InvoiceItemBase):
 class InvoiceItemUpdate(BaseModel):
     treatment_id: Optional[int] = Field(None, gt=0)
     quantity: Optional[int] = Field(None, gt=0)
-    unitprice: Optional[Decimal] = Field(None, gt=0, max_digits=10, decimal_places=2)
+    unitprice: Optional[Decimal] = Field(None, ge=0, max_digits=10, decimal_places=2)
     description: Optional[str] = Field(None, max_length=255)
+
+    @field_validator("treatment_id", "quantity", "unitprice", mode="before")
+    @classmethod
+    def validate_required_fields(cls, value):
+        if value is None:
+            raise ValueError("Provided invoice item fields cannot be null")
+        return value
 
 
 class InvoiceItemResponse(InvoiceItemBase):

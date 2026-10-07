@@ -26,6 +26,8 @@ class TreatmentCategoryUpdate(BaseModel):
     def trim_category_name(cls, value):
         if isinstance(value, str):
             value = value.strip()
+        if value is None:
+            raise ValueError("Provided category name cannot be null")
         return value
 
 
