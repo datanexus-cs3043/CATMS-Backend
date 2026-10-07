@@ -25,7 +25,7 @@ async def _get_coverage(cur, coverage_id: int) -> dict:
            JOIN insurance_policy p ON p.policy_id = c.policy_id
            JOIN patient pt ON pt.patient_id = p.patient_id
            LEFT JOIN treatment t ON t.treatment_id = c.treatment_id
-           WHERE c.coverage_id = %s;""",
+           WHERE c.coverage_id = %s FOR UPDATE OF c;""",
         (coverage_id,),
     )
     coverage = await cur.fetchone()

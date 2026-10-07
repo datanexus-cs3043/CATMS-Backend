@@ -26,7 +26,7 @@ async def _get_policy(cur, policy_id: int) -> dict:
            FROM insurance_policy p
            JOIN insurance_provider ip ON ip.provider_id = p.provider_id
            JOIN patient pt ON pt.patient_id = p.patient_id
-           WHERE p.policy_id = %s;""",
+           WHERE p.policy_id = %s FOR UPDATE OF p;""",
         (policy_id,),
     )
     policy = await cur.fetchone()
@@ -147,6 +147,10 @@ async def update_insurance_policy(
         policy = await _get_policy(cur, policy_id)
         _authorize_policy(policy, current_user, write=True)
         patient_id = update_data.get("patient_id", policy["patient_id"])
+        if patient_id != policy["patient_id"]:
+            await cur.execute("SELECT claim_id FROM insurance_claim WHERE policy_id = %s LIMIT 1;", (policy_id,))
+            if await cur.fetchone():
+                raise HTTPException(409, "A policy with claims cannot be reassigned to another patient.")
         provider_id = update_data.get("provider_id", policy["provider_id"])
         patient = await _validate_references(cur, patient_id, provider_id)
         check_branch_scope(patient["branch_id"], current_user)

@@ -27,7 +27,7 @@ async def _get_invoice(cur, invoice_id: int) -> dict:
            JOIN appointment a ON a.appointment_id = i.appointment_id
            JOIN patient p ON p.patient_id = a.patient_id
            LEFT JOIN doctor d ON d.doctor_id = a.doctor_id
-           WHERE i.invoice_id = %s FOR UPDATE;""",
+           WHERE i.invoice_id = %s FOR UPDATE OF i;""",
         (invoice_id,),
     )
     invoice = await cur.fetchone()
@@ -45,6 +45,8 @@ def _authorize_invoice(invoice: dict, current_user: JWTPayload, *, write: bool =
     if current_user.role.lower() not in STAFF_ROLES:
         raise HTTPException(403, "Staff credentials required for this resource.")
     check_branch_scope(invoice["branch_id"], current_user)
+    if current_user.role.lower() == "doctor" and current_user.doctor_id != invoice["doctor_id"]:
+        raise HTTPException(403, "Doctors can only access invoices for their own appointments.")
     if write and current_user.role.lower() not in INVOICE_WRITE_ROLES:
         raise HTTPException(403, "You are not authorized to modify invoices.")
 
@@ -55,7 +57,7 @@ async def list_invoices(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     async with conn.cursor(row_factory=dict_row) as cur:
-        query = """SELECT i.*, a.patient_id, a.branch_id, a.appointment_date,
+        query = """SELECT i.*, a.patient_id, a.branch_id, a.doctor_id, a.appointment_date,
                           p.first_name || ' ' || p.last_name AS patient_name,
                           d.doctor_name
                    FROM invoice i
@@ -72,6 +74,9 @@ async def list_invoices(
             if current_user.role.lower() != "admin":
                 query += " WHERE a.branch_id = %s"
                 params.append(current_user.branch_id)
+                if current_user.role.lower() == "doctor":
+                    query += " AND a.doctor_id = %s"
+                    params.append(current_user.doctor_id)
         query += " ORDER BY i.invoice_date DESC, i.invoice_id DESC;"
         await cur.execute(query, tuple(params))
         return [InvoiceResponse(**row) for row in await cur.fetchall()]
