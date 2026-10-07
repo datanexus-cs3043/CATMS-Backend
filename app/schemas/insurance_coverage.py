@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class InsuranceCoverageBase(BaseModel):
@@ -24,6 +24,13 @@ class InsuranceCoverageUpdate(BaseModel):
     maximum_amount: Optional[Decimal] = Field(
         None, ge=0, max_digits=10, decimal_places=2
     )
+
+    @field_validator("policy_id", "treatment_id", "coverage_percentage", "maximum_amount", mode="before")
+    @classmethod
+    def validate_required_fields(cls, value):
+        if value is None:
+            raise ValueError("Provided insurance coverage fields cannot be null")
+        return value
 
 
 class InsuranceCoverageResponse(InsuranceCoverageBase):
