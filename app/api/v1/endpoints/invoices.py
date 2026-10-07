@@ -8,7 +8,11 @@ from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, databa
 from app.auth.dependencies import get_current_user, require_csrf, require_role, verify_patient_ownership
 from app.auth.schemas import JWTPayload
 from app.core.database import get_db
-from app.schemas.invoice import InvoiceCreate, InvoiceResponse, InvoiceUpdate
+from app.schemas.invoice import (
+    InvoiceCreate,
+    InvoiceResponse,
+    InvoiceUpdate,
+)
 
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
 INVOICE_WRITE_ROLES = ("admin", "branch_manager", "receptionist_cashier")
@@ -82,4 +86,75 @@ async def get_invoice(
     async with conn.cursor(row_factory=dict_row) as cur:
         invoice = await _get_invoice(cur, invoice_id)
     _authorize_invoice(invoice, current_user)
+    return InvoiceResponse(**invoice)
+
+
+async def _validate_staff(cur, staff_id: int, branch_id: int) -> None:
+    await cur.execute(
+        "SELECT staff_id FROM staff WHERE staff_id = %s AND branch_id = %s;",
+        (staff_id, branch_id),
+    )
+    if not await cur.fetchone():
+        raise HTTPException(422, "Invoice staff must belong to the appointment branch.")
+
+
+@router.post(
+    "",
+    response_model=InvoiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_invoice(
+    payload: InvoiceCreate,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
+):
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT appointment_id, patient_id, branch_id FROM appointment "
+            "WHERE appointment_id = %s FOR UPDATE;",
+            (payload.appointment_id,),
+        )
+        appointment = await cur.fetchone()
+        if not appointment:
+            raise HTTPException(404, f"Appointment {payload.appointment_id} not found")
+        check_branch_scope(appointment["branch_id"], current_user)
+        await _validate_staff(cur, payload.staff_id, appointment["branch_id"])
+        await cur.execute(
+            "INSERT INTO invoice (appointment_id, staff_id, invoice_date, amount_paid, balance, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING invoice_id;",
+            (payload.appointment_id, payload.staff_id, payload.invoice_date,
+             payload.amount_paid, payload.balance, payload.status),
+        )
+        invoice_id = (await cur.fetchone())["invoice_id"]
+        invoice = await _get_invoice(cur, invoice_id)
+    return InvoiceResponse(**invoice)
+
+
+@router.put(
+    "/{invoice_id}",
+    response_model=InvoiceResponse,
+    dependencies=[Depends(require_csrf)],
+)
+async def update_invoice(
+    invoice_id: int,
+    payload: InvoiceUpdate,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
+):
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(400, "No update fields provided")
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        invoice = await _get_invoice(cur, invoice_id)
+        _authorize_invoice(invoice, current_user, write=True)
+        if "staff_id" in update_data:
+            await _validate_staff(cur, update_data["staff_id"], invoice["branch_id"])
+        clauses = [f"{key} = %s" for key in update_data]
+        values = list(update_data.values()) + [invoice_id]
+        await cur.execute(
+            f"UPDATE invoice SET {', '.join(clauses)} WHERE invoice_id = %s;",
+            tuple(values),
+        )
+        invoice = await _get_invoice(cur, invoice_id)
     return InvoiceResponse(**invoice)
