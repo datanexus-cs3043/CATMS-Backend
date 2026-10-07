@@ -1,16 +1,21 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope
-from app.auth.dependencies import get_current_user
+from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
+from app.auth.dependencies import get_current_user, require_csrf, require_role
 from app.auth.schemas import JWTPayload
 from app.core.database import get_db
-from app.schemas.insurance_policy import InsurancePolicyResponse
+from app.schemas.insurance_policy import (
+    InsurancePolicyCreate,
+    InsurancePolicyResponse,
+    InsurancePolicyUpdate,
+)
 
 router = APIRouter(prefix="/insurance/policies", tags=["Insurance Policies"])
+POLICY_WRITE_ROLES = ("admin", "branch_manager", "receptionist_cashier")
 
 
 async def _get_policy(cur, policy_id: int) -> dict:
@@ -79,3 +84,98 @@ async def get_insurance_policy(
         policy = await _get_policy(cur, policy_id)
     _authorize_policy(policy, current_user)
     return InsurancePolicyResponse(**policy)
+
+
+async def _validate_references(cur, patient_id: int, provider_id: int) -> dict:
+    await cur.execute("SELECT patient_id, branch_id FROM patient WHERE patient_id = %s;", (patient_id,))
+    patient = await cur.fetchone()
+    if not patient:
+        raise HTTPException(422, f"Patient {patient_id} not found")
+    await cur.execute("SELECT provider_id FROM insurance_provider WHERE provider_id = %s;", (provider_id,))
+    if not await cur.fetchone():
+        raise HTTPException(422, f"Insurance provider {provider_id} not found")
+    return patient
+
+
+def _validate_dates(start_date, end_date) -> None:
+    if end_date < start_date:
+        raise HTTPException(422, "end_date must be on or after start_date")
+
+
+@router.post(
+    "",
+    response_model=InsurancePolicyResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_insurance_policy(
+    payload: InsurancePolicyCreate,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*POLICY_WRITE_ROLES)),
+):
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        patient = await _validate_references(cur, payload.patient_id, payload.provider_id)
+        check_branch_scope(patient["branch_id"], current_user)
+        _validate_dates(payload.start_date, payload.end_date)
+        await cur.execute(
+            """INSERT INTO insurance_policy
+               (patient_id, provider_id, policy_number, start_date, end_date, status)
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING policy_id;""",
+            (payload.patient_id, payload.provider_id, payload.policy_number,
+             payload.start_date, payload.end_date, payload.status),
+        )
+        policy_id = (await cur.fetchone())["policy_id"]
+        policy = await _get_policy(cur, policy_id)
+    return InsurancePolicyResponse(**policy)
+
+
+@router.put(
+    "/{policy_id}",
+    response_model=InsurancePolicyResponse,
+    dependencies=[Depends(require_csrf)],
+)
+async def update_insurance_policy(
+    policy_id: int,
+    payload: InsurancePolicyUpdate,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*POLICY_WRITE_ROLES)),
+):
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(400, "No update fields provided")
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        policy = await _get_policy(cur, policy_id)
+        _authorize_policy(policy, current_user, write=True)
+        patient_id = update_data.get("patient_id", policy["patient_id"])
+        provider_id = update_data.get("provider_id", policy["provider_id"])
+        patient = await _validate_references(cur, patient_id, provider_id)
+        check_branch_scope(patient["branch_id"], current_user)
+        start_date = update_data.get("start_date", policy["start_date"])
+        end_date = update_data.get("end_date", policy["end_date"])
+        _validate_dates(start_date, end_date)
+        clauses = [f"{key} = %s" for key in update_data]
+        values = list(update_data.values()) + [policy_id]
+        await cur.execute(
+            f"UPDATE insurance_policy SET {', '.join(clauses)} "
+            "WHERE policy_id = %s;",
+            tuple(values),
+        )
+        policy = await _get_policy(cur, policy_id)
+    return InsurancePolicyResponse(**policy)
+
+
+@router.delete(
+    "/{policy_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_csrf)],
+)
+async def delete_insurance_policy(
+    policy_id: int,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*POLICY_WRITE_ROLES)),
+):
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        policy = await _get_policy(cur, policy_id)
+        _authorize_policy(policy, current_user, write=True)
+        await cur.execute("DELETE FROM insurance_policy WHERE policy_id = %s;", (policy_id,))
+    return None
