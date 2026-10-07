@@ -10,7 +10,7 @@ from app.auth.schemas import JWTPayload
 from app.core.database import get_db
 from app.schemas.payment import PaymentCreate, PaymentResponse, PaymentUpdate
 
-router = APIRouter(tags=["Payments"])
+router = APIRouter(tags=["Doctor Payments"])
 PAYMENT_WRITE_ROLES = ("admin", "branch_manager", "receptionist_cashier")
 
 
@@ -27,21 +27,22 @@ async def _get_invoice_for_payment(cur, invoice_id: int) -> dict:
     return invoice
 
 
-def _authorize_payment_resource(invoice: dict, current_user: JWTPayload, *, write: bool = False) -> None:
-    if current_user.user_type == "patient":
-        if current_user.patient_id != invoice["patient_id"]:
-            raise HTTPException(403, "You are not authorized to access this payment.")
-        if write:
-            raise HTTPException(403, "Patients cannot modify payments.")
-        return
-    if current_user.role.lower() not in STAFF_ROLES:
+def _authorize_payment_resource(
+    invoice: dict, current_user: JWTPayload, *, write: bool = False, doctor_id: int | None = None
+) -> None:
+    if current_user.user_type != "staff" or current_user.role.lower() not in STAFF_ROLES:
         raise HTTPException(403, "Staff credentials required for this resource.")
     check_branch_scope(invoice["branch_id"], current_user)
     if write and current_user.role.lower() not in PAYMENT_WRITE_ROLES:
         raise HTTPException(403, "You are not authorized to modify payments.")
+    if current_user.role.lower() == "doctor":
+        if current_user.doctor_id is None or (
+            doctor_id is not None and doctor_id != current_user.doctor_id
+        ):
+            raise HTTPException(403, "Doctors can only access their own compensation.")
 
 
-async def _payment_query(cur, payment_id=None, invoice_id=None) -> None:
+async def _payment_query(cur, payment_id=None, invoice_id=None, doctor_id=None) -> None:
     query = """SELECT dp.doctor_payment_id AS payment_id, dp.doctor_id,
                       dp.appointment_id, dp.invoice_item_id, dp.date, dp.time,
                       dp.doctor_payment AS amount
@@ -55,7 +56,13 @@ async def _payment_query(cur, payment_id=None, invoice_id=None) -> None:
     elif invoice_id is not None:
         query += " WHERE i.invoice_id = %s"
         params.append(invoice_id)
-    query += " ORDER BY dp.date DESC, dp.time DESC, dp.doctor_payment_id DESC;"
+    if doctor_id is not None:
+        query += " AND dp.doctor_id = %s" if params else " WHERE dp.doctor_id = %s"
+        params.append(doctor_id)
+    query += " ORDER BY dp.date DESC, dp.time DESC, dp.doctor_payment_id DESC"
+    if payment_id is not None:
+        query += " FOR UPDATE OF dp"
+    query += ";"
     await cur.execute(query, tuple(params))
 
 
@@ -65,10 +72,12 @@ async def list_invoice_payments(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
+    """List doctor compensation linked to an invoice, not patient receipts."""
     async with conn.cursor(row_factory=dict_row) as cur:
         invoice = await _get_invoice_for_payment(cur, invoice_id)
         _authorize_payment_resource(invoice, current_user)
-        await _payment_query(cur, invoice_id=invoice_id)
+        doctor_id = current_user.doctor_id if current_user.role.lower() == "doctor" else None
+        await _payment_query(cur, invoice_id=invoice_id, doctor_id=doctor_id)
         return [PaymentResponse(**row) for row in await cur.fetchall()]
 
 
@@ -78,7 +87,7 @@ async def _get_payment(cur, payment_id: int) -> dict:
     if not payment:
         raise HTTPException(404, f"Payment {payment_id} not found")
     await cur.execute(
-        """SELECT i.invoice_id, a.patient_id, a.branch_id
+        """SELECT i.invoice_id, a.appointment_id, a.patient_id, a.branch_id
            FROM invoice i JOIN appointment a ON a.appointment_id = i.appointment_id
            WHERE a.appointment_id = %s;""",
         (payment["appointment_id"],),
@@ -95,9 +104,10 @@ async def get_payment(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
+    """Retrieve a doctor compensation record; the payment URL is a legacy alias."""
     async with conn.cursor(row_factory=dict_row) as cur:
         payment = await _get_payment(cur, payment_id)
-    _authorize_payment_resource(payment["_invoice"], current_user)
+    _authorize_payment_resource(payment["_invoice"], current_user, doctor_id=payment["doctor_id"])
     payment.pop("_invoice")
     return PaymentResponse(**payment)
 
@@ -134,6 +144,7 @@ async def create_invoice_payment(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*PAYMENT_WRITE_ROLES)),
 ):
+    """Record doctor compensation. This does not record a patient receipt or settle an invoice."""
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         invoice = await _get_invoice_for_payment(cur, invoice_id)
         _authorize_payment_resource(invoice, current_user, write=True)
@@ -163,6 +174,7 @@ async def update_payment(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*PAYMENT_WRITE_ROLES)),
 ):
+    """Update doctor compensation without changing patient payment totals."""
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(400, "No update fields provided")

@@ -63,7 +63,7 @@ async def _validate_references(cur, invoice_id: int, policy_id: int) -> dict:
     if not invoice:
         raise HTTPException(422, f"Invoice {invoice_id} not found")
     await cur.execute(
-        "SELECT policy_id, patient_id FROM insurance_policy WHERE policy_id = %s;",
+        "SELECT policy_id, patient_id FROM insurance_policy WHERE policy_id = %s FOR SHARE;",
         (policy_id,),
     )
     policy = await cur.fetchone()
