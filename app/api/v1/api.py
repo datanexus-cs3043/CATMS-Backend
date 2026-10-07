@@ -15,6 +15,7 @@ from app.api.v1.endpoints import (
     payments,
     insurance_providers,
     insurance_policies,
+    insurance_coverage,
     invoice_items,
 )
 from app.auth.router import router as auth_router
@@ -37,4 +38,5 @@ api_router.include_router(invoices.router)
 api_router.include_router(payments.router)
 api_router.include_router(insurance_providers.router)
 api_router.include_router(insurance_policies.router)
+api_router.include_router(insurance_coverage.router)
 api_router.include_router(invoice_items.router)
