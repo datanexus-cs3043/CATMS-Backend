@@ -93,13 +93,15 @@ async def get_doctor(
         return DoctorDetailResponse(**doctor_data)
 
 
-@router.post("", response_model=DoctorResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=DoctorResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_csrf)])
 async def create_doctor(
     payload: DoctorCreate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
 ):
     """Register a new doctor profile linked to a staff record."""
-    async with conn.cursor() as cur:
+    async with database_mutation(conn), conn.cursor() as cur:
         await cur.execute("SELECT staff_id FROM staff WHERE staff_id = %s;", (payload.staff_id,))
         if not await cur.fetchone():
             raise HTTPException(
@@ -127,11 +129,12 @@ async def create_doctor(
         return DoctorResponse(**new_doc)
 
 
-@router.put("/{doctor_id}", response_model=DoctorResponse)
+@router.put("/{doctor_id}", response_model=DoctorResponse, dependencies=[Depends(require_csrf)])
 async def update_doctor(
     doctor_id: int,
     payload: DoctorUpdate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
 ):
     """Update details of a doctor profile."""
     update_data = payload.model_dump(exclude_unset=True)
@@ -141,7 +144,7 @@ async def update_doctor(
             detail="No update fields provided",
         )
 
-    async with conn.cursor() as cur:
+    async with database_mutation(conn), conn.cursor() as cur:
         await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
         if not await cur.fetchone():
             raise HTTPException(
@@ -175,13 +178,15 @@ async def list_specialties(
         return [SpecialtyResponse(**row) for row in rows]
 
 
-@router.post("/specialties", response_model=SpecialtyResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/specialties", response_model=SpecialtyResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_csrf)])
 async def create_specialty(
     payload: SpecialtyCreate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
 ):
     """Add a new medical specialty to the catalogue."""
-    async with conn.cursor() as cur:
+    async with database_mutation(conn), conn.cursor() as cur:
         insert_query = """
             INSERT INTO specialty (specialty_name, description)
             VALUES (%s, %s)
@@ -192,14 +197,16 @@ async def create_specialty(
         return SpecialtyResponse(**new_spec)
 
 
-@router.post("/{doctor_id}/specialties/{specialty_id}", status_code=status.HTTP_201_CREATED)
+@router.post("/{doctor_id}/specialties/{specialty_id}", status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_csrf)])
 async def assign_specialty_to_doctor(
     doctor_id: int,
     specialty_id: int,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
 ):
     """Associate a medical specialty with a doctor."""
-    async with conn.cursor() as cur:
+    async with database_mutation(conn), conn.cursor() as cur:
         await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
         if not await cur.fetchone():
             raise HTTPException(
