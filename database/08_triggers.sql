@@ -83,3 +83,26 @@ BEGIN
     END IF;
 END;
 $$;
+
+CREATE OR REPLACE TRIGGER trg_appointment_validate
+BEFORE INSERT OR UPDATE OF
+    patient_id, doctor_id, branch_id, appointment_date,
+    start_time, end_time, status, original_appointment_id
+ON appointment
+FOR EACH ROW EXECUTE FUNCTION fn_validate_appointment();
+
+CREATE OR REPLACE TRIGGER trg_appointment_treatment_sync
+AFTER INSERT OR UPDATE OF treatment_id ON appointment
+FOR EACH ROW EXECUTE FUNCTION fn_sync_appointment_treatment();
+
+CREATE OR REPLACE TRIGGER trg_invoice_prepare
+BEFORE INSERT OR UPDATE OF amount_paid, balance, status ON invoice
+FOR EACH ROW EXECUTE FUNCTION fn_prepare_invoice();
+
+CREATE OR REPLACE TRIGGER trg_invoice_seed_payment_ledger
+AFTER INSERT OR UPDATE OF amount_paid ON invoice
+FOR EACH ROW EXECUTE FUNCTION fn_sync_invoice_payment_ledger();
+
+CREATE OR REPLACE TRIGGER trg_invoice_item_lock
+BEFORE INSERT OR UPDATE OR DELETE ON invoice_item
+FOR EACH ROW EXECUTE FUNCTION fn_lock_invoice_for_financial_change();
