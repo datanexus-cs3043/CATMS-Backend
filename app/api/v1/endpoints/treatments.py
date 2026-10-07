@@ -47,3 +47,38 @@ async def get_treatment(
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Treatment {treatment_id} not found")
     return TreatmentResponse(**row)
+
+
+@router.post(
+    "",
+    response_model=TreatmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_treatment(
+    payload: TreatmentCreate,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
+):
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT category_id FROM treatment_category WHERE category_id = %s;",
+            (payload.category_id,),
+        )
+        if not await cur.fetchone():
+            raise HTTPException(422, f"Treatment category {payload.category_id} not found")
+        await cur.execute(
+            "SELECT treatment_id FROM treatment WHERE LOWER(service_code) = LOWER(%s);",
+            (payload.service_code,),
+        )
+        if await cur.fetchone():
+            raise HTTPException(409, "A treatment with this service code already exists.")
+        await cur.execute(
+            """INSERT INTO treatment
+               (category_id, service_code, treatment_name, standard_price)
+               VALUES (%s, %s, %s, %s) RETURNING treatment_id;""",
+            (payload.category_id, payload.service_code, payload.treatment_name, payload.standard_price),
+        )
+        treatment_id = (await cur.fetchone())["treatment_id"]
+        await _treatment_query(cur, treatment_id)
+        return TreatmentResponse(**await cur.fetchone())
