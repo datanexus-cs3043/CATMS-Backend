@@ -56,3 +56,50 @@ BEGIN
      WHERE invoice_id = p_invoice_id;
 END;
 $$;
+
+
+CREATE OR REPLACE FUNCTION fn_recalculate_invoice_item()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        PERFORM fn_recalculate_invoice(OLD.invoice_id, TRUE);
+    ELSIF TG_OP = 'UPDATE' AND OLD.invoice_id IS DISTINCT FROM NEW.invoice_id THEN
+        PERFORM fn_recalculate_invoice(OLD.invoice_id, TRUE);
+        PERFORM fn_recalculate_invoice(NEW.invoice_id, TRUE);
+    ELSE
+        PERFORM fn_recalculate_invoice(NEW.invoice_id, TRUE);
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION fn_lock_invoice_for_financial_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_invoice_ids INTEGER[];
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        v_invoice_ids := ARRAY[NEW.invoice_id];
+    ELSIF TG_OP = 'DELETE' THEN
+        v_invoice_ids := ARRAY[OLD.invoice_id];
+    ELSE
+        v_invoice_ids := ARRAY[OLD.invoice_id, NEW.invoice_id];
+    END IF;
+
+    PERFORM invoice_id
+      FROM invoice
+     WHERE invoice_id = ANY(v_invoice_ids)
+     ORDER BY invoice_id
+     FOR UPDATE;
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
