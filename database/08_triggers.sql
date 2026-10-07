@@ -106,3 +106,29 @@ FOR EACH ROW EXECUTE FUNCTION fn_sync_invoice_payment_ledger();
 CREATE OR REPLACE TRIGGER trg_invoice_item_lock
 BEFORE INSERT OR UPDATE OR DELETE ON invoice_item
 FOR EACH ROW EXECUTE FUNCTION fn_lock_invoice_for_financial_change();
+
+CREATE OR REPLACE TRIGGER trg_invoice_item_recalculate
+AFTER INSERT OR UPDATE OR DELETE ON invoice_item
+FOR EACH ROW EXECUTE FUNCTION fn_recalculate_invoice_item();
+
+CREATE OR REPLACE TRIGGER trg_patient_payment_lock
+BEFORE INSERT OR UPDATE OR DELETE ON patient_payment
+FOR EACH ROW EXECUTE FUNCTION fn_lock_invoice_for_financial_change();
+
+CREATE OR REPLACE TRIGGER trg_patient_payment_sync
+AFTER INSERT OR UPDATE OR DELETE ON patient_payment
+FOR EACH ROW EXECUTE FUNCTION fn_sync_patient_payment();
+
+CREATE OR REPLACE TRIGGER trg_invoice_complete_appointment
+AFTER INSERT ON invoice
+FOR EACH ROW EXECUTE FUNCTION fn_mark_appointment_completed();
+
+CREATE OR REPLACE TRIGGER trg_insurance_claim_validate
+BEFORE INSERT OR UPDATE OF invoice_id, policy_id, claim_amount, approved_amount
+ON insurance_claim
+FOR EACH ROW EXECUTE FUNCTION fn_validate_insurance_claim();
+
+CREATE OR REPLACE TRIGGER trg_doctor_payment_validate
+BEFORE INSERT OR UPDATE OF doctor_id, appointment_id, invoice_item_id
+ON doctor_payment
+FOR EACH ROW EXECUTE FUNCTION fn_validate_doctor_payment();
