@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-from app.auth.dependencies import require_csrf, require_role
+from app.auth.dependencies import get_current_user, verify_patient_ownership, require_csrf, require_role
 from app.auth.schemas import JWTPayload
 from app.api.v1.endpoints._guards import check_branch_scope, database_mutation
 
@@ -30,6 +30,13 @@ def _check_action_scope(branch_id: int, doctor_id: int, current_user: JWTPayload
     check_branch_scope(branch_id, current_user)
     if current_user.role.lower() == "doctor" and current_user.doctor_id != doctor_id:
         raise HTTPException(403, "Doctors can only manage their own appointments.")
+
+
+def _check_read_scope(appointment: dict, current_user: JWTPayload) -> None:
+    if current_user.user_type == "staff":
+        _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
+    else:
+        verify_patient_ownership(appointment["patient_id"], current_user)
 
 
 async def _get_appointment_row(conn: AsyncConnection, appointment_id: int) -> dict:
@@ -185,10 +192,25 @@ async def list_appointments(
     branch_id: Optional[int] = Query(None, description="Filter by branch ID"),
     appointment_date: Optional[date] = Query(None, description="Filter by appointment date"),
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
 ):
     """List appointments with optional filtering by doctor, patient, branch, or date."""
     query = "SELECT * FROM appointment WHERE 1=1"
     params = []
+
+    if current_user.user_type == "staff":
+        if current_user.role.lower() != "admin":
+            check_branch_scope(branch_id if branch_id is not None else current_user.branch_id, current_user)
+            branch_id = current_user.branch_id
+        if current_user.role.lower() == "doctor":
+            if current_user.doctor_id is None or doctor_id not in (None, current_user.doctor_id):
+                raise HTTPException(403, "Doctors can only view their own appointments.")
+            doctor_id = current_user.doctor_id
+    else:
+        if current_user.patient_id is None:
+            raise HTTPException(403, "A linked patient profile is required.")
+        verify_patient_ownership(patient_id if patient_id is not None else current_user.patient_id, current_user)
+        patient_id = current_user.patient_id
 
     if doctor_id is not None:
         query += " AND doctor_id = %s"
@@ -219,6 +241,7 @@ async def list_appointments(
 async def get_appointment(
     appointment_id: int,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
 ):
     """Retrieve full appointment details including doctor, patient, treatment, and consultation notes."""
     async with conn.cursor() as cur:
@@ -244,24 +267,30 @@ async def get_appointment(
                 detail=f"Appointment with id {appointment_id} not found",
             )
 
-        await cur.execute(
-            "SELECT * FROM consultation_note WHERE appointment_id = %s ORDER BY created_at ASC;",
-            (appointment_id,),
-        )
-        notes = await cur.fetchall()
+        _check_read_scope(appt, current_user)
+        notes = []
+        if current_user.user_type == "staff" and current_user.role.lower() in ("admin", "branch_manager", "doctor"):
+            await cur.execute(
+                "SELECT * FROM consultation_note WHERE appointment_id = %s ORDER BY created_at ASC;",
+                (appointment_id,),
+            )
+            notes = await cur.fetchall()
 
         appt_data = dict(appt)
         appt_data["consultation_notes"] = [ConsultationNoteResponse(**n) for n in notes]
         return AppointmentDetailResponse(**appt_data)
 
 
-@router.post("", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_csrf)])
 async def create_appointment(
     payload: AppointmentCreate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     """Schedule and record a new clinic appointment."""
-    async with conn.cursor() as cur:
+    _check_action_scope(payload.branch_id, payload.doctor_id, current_user)
+    async with database_mutation(conn), conn.cursor() as cur:
         # Validate patient
         await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (payload.patient_id,))
         if not await cur.fetchone():
@@ -304,7 +333,7 @@ async def create_appointment(
                 payload.start_time,
                 payload.end_time,
                 payload.appointment_type,
-                payload.created_by,
+                str(current_user.user_id),
                 payload.original_appointment_id,
                 payload.treatment_id,
             ),
@@ -313,11 +342,12 @@ async def create_appointment(
         return AppointmentResponse(**new_appt)
 
 
-@router.put("/{appointment_id}", response_model=AppointmentResponse)
+@router.put("/{appointment_id}", response_model=AppointmentResponse, dependencies=[Depends(require_csrf)])
 async def update_appointment(
     appointment_id: int,
     payload: AppointmentUpdate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     """Reschedule or update details of an existing appointment."""
     update_data = payload.model_dump(exclude_unset=True)
@@ -327,13 +357,18 @@ async def update_appointment(
             detail="No update fields provided",
         )
 
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
-        if not await cur.fetchone():
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM appointment WHERE appointment_id = %s FOR UPDATE;", (appointment_id,))
+        appointment = await cur.fetchone()
+        if not appointment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Appointment with id {appointment_id} not found",
             )
+
+        _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
+        _check_action_scope(update_data.get("branch_id", appointment["branch_id"]),
+                            update_data.get("doctor_id", appointment["doctor_id"]), current_user)
 
         set_clauses = [f"{k} = %s" for k in update_data.keys()]
         values = list(update_data.values())
@@ -350,20 +385,22 @@ async def update_appointment(
         return AppointmentResponse(**updated_row)
 
 
-@router.delete("/{appointment_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{appointment_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_csrf)])
 async def delete_appointment(
     appointment_id: int,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     """Cancel and remove an appointment."""
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
-        if not await cur.fetchone():
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM appointment WHERE appointment_id = %s FOR UPDATE;", (appointment_id,))
+        appointment = await cur.fetchone()
+        if not appointment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Appointment with id {appointment_id} not found",
             )
-
+        _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
         await cur.execute("DELETE FROM appointment WHERE appointment_id = %s;", (appointment_id,))
         return None
 
@@ -372,8 +409,11 @@ async def delete_appointment(
 async def list_consultation_notes(
     appointment_id: int,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "doctor")),
 ):
     """List consultation notes for a given appointment."""
+    appointment = await _get_appointment_row(conn, appointment_id)
+    _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
     async with conn.cursor() as cur:
         await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
         if not await cur.fetchone():
@@ -429,12 +469,13 @@ async def add_consultation_note(
         return ConsultationNoteResponse(**new_note)
 
 
-async def _get_note_row(conn: AsyncConnection, note_id: int, current_user: JWTPayload) -> dict:
+async def _get_note_row(conn: AsyncConnection, note_id: int, current_user: JWTPayload, *, lock: bool = False) -> dict:
     async with conn.cursor(row_factory=dict_row) as cur:
+        query = """SELECT n.*, a.branch_id, a.doctor_id FROM consultation_note n
+                   JOIN appointment a ON a.appointment_id = n.appointment_id
+                   WHERE n.note_id = %s"""
         await cur.execute(
-            """SELECT n.*, a.branch_id, a.doctor_id FROM consultation_note n
-               JOIN appointment a ON a.appointment_id = n.appointment_id
-               WHERE n.note_id = %s;""", (note_id,))
+            query + (" FOR UPDATE OF a, n;" if lock else ";"), (note_id,))
         note = await cur.fetchone()
     if not note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
@@ -466,8 +507,8 @@ async def update_consultation_note(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "doctor")),
 ):
-    await _get_note_row(conn, note_id, current_user)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await _get_note_row(conn, note_id, current_user, lock=True)
         await cur.execute(
             "UPDATE consultation_note SET note_content = %s WHERE note_id = %s RETURNING *;",
             (payload.note_content, note_id),
@@ -486,11 +527,10 @@ async def delete_consultation_note(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "doctor")),
 ):
-    await _get_note_row(conn, note_id, current_user)
     async with database_mutation(conn), conn.cursor() as cur:
+        await _get_note_row(conn, note_id, current_user, lock=True)
         await cur.execute("DELETE FROM consultation_note WHERE note_id = %s;", (note_id,))
     return None
-
 
 
 

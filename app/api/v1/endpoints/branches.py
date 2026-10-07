@@ -190,8 +190,7 @@ async def list_branch_appointments(
     await _get_branch(conn, branch_id)
     check_branch_scope(branch_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """SELECT a.appointment_id, a.patient_id, a.doctor_id, a.branch_id,
+        query = """SELECT a.appointment_id, a.patient_id, a.doctor_id, a.branch_id,
                       a.appointment_date, a.start_time, a.end_time,
                       a.appointment_type, a.created_by,
                       p.first_name || ' ' || p.last_name AS patient_name,
@@ -199,9 +198,14 @@ async def list_branch_appointments(
                FROM appointment a
                JOIN patient p ON p.patient_id = a.patient_id
                JOIN doctor d ON d.doctor_id = a.doctor_id
-               WHERE a.branch_id = %s
-               ORDER BY a.appointment_date DESC, a.start_time DESC;""",
-            (branch_id,),
-        )
+               WHERE a.branch_id = %s"""
+        params = [branch_id]
+        if current_user.role.lower() == "doctor":
+            if current_user.doctor_id is None:
+                raise HTTPException(403, "A linked doctor profile is required.")
+            query += " AND a.doctor_id = %s"
+            params.append(current_user.doctor_id)
+        query += " ORDER BY a.appointment_date DESC, a.start_time DESC;"
+        await cur.execute(query, tuple(params))
         rows = await cur.fetchall()
     return [BranchAppointmentResponse(**row) for row in rows]
