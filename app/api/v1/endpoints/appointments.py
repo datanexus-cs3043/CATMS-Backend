@@ -394,20 +394,30 @@ async def list_consultation_notes(
     "/{appointment_id}/notes",
     response_model=ConsultationNoteResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
 )
 async def add_consultation_note(
     appointment_id: int,
     payload: ConsultationNoteCreate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "doctor")),
 ):
     """Add a clinical consultation note to an appointment."""
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT appointment_id FROM appointment WHERE appointment_id = %s;", (appointment_id,))
-        if not await cur.fetchone():
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT appointment_id, branch_id, doctor_id FROM appointment "
+            "WHERE appointment_id = %s FOR UPDATE;",
+            (appointment_id,),
+        )
+        appointment = await cur.fetchone()
+        if not appointment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Appointment with id {appointment_id} not found",
             )
+        check_branch_scope(appointment["branch_id"], current_user)
+        if current_user.role.lower() == "doctor" and current_user.doctor_id != appointment["doctor_id"]:
+            raise HTTPException(403, "Doctors can only add notes to their own appointments.")
 
         insert_query = """
             INSERT INTO consultation_note (appointment_id, note_content)
@@ -480,7 +490,6 @@ async def delete_consultation_note(
     async with database_mutation(conn), conn.cursor() as cur:
         await cur.execute("DELETE FROM consultation_note WHERE note_id = %s;", (note_id,))
     return None
-
 
 
 
