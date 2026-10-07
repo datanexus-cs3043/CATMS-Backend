@@ -108,3 +108,53 @@ BEGIN
      WHERE appointment_id = p_appointment_id;
 END;
 $$;
+
+CREATE OR REPLACE PROCEDURE sp_reschedule_appointment(
+    p_appointment_id INTEGER,
+    p_appointment_date DATE,
+    p_start_time TIME,
+    p_end_time TIME,
+    p_created_by VARCHAR(150)
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_appointment appointment%ROWTYPE;
+BEGIN
+    SELECT * INTO v_appointment
+      FROM appointment
+     WHERE appointment_id = p_appointment_id
+     FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Appointment % does not exist', p_appointment_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    IF v_appointment.status <> 'Scheduled' THEN
+        RAISE EXCEPTION 'Only scheduled appointments can be rescheduled'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+          FROM appointment
+         WHERE original_appointment_id = p_appointment_id
+    ) THEN
+        RAISE EXCEPTION 'Appointment % has already been rescheduled', p_appointment_id
+            USING ERRCODE = 'unique_violation';
+    END IF;
+    IF p_end_time <= p_start_time THEN
+        RAISE EXCEPTION 'Appointment end time must be later than start time'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- The appointment trigger checks the new slot and marks the old row cancelled.
+    INSERT INTO appointment (
+        patient_id, doctor_id, branch_id, appointment_date, start_time, end_time,
+        appointment_type, created_by, original_appointment_id, treatment_id
+    ) VALUES (
+        v_appointment.patient_id, v_appointment.doctor_id, v_appointment.branch_id,
+        p_appointment_date, p_start_time, p_end_time,
+        v_appointment.appointment_type, p_created_by, p_appointment_id,
+        v_appointment.treatment_id
+    );
+
+END;
