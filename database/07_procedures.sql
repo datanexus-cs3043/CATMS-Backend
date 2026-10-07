@@ -43,3 +43,44 @@ BEGIN
 END;
 $$;
 
+
+CREATE OR REPLACE PROCEDURE sp_complete_appointment(p_appointment_id INTEGER)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_appointment appointment%ROWTYPE;
+BEGIN
+    SELECT * INTO v_appointment
+      FROM appointment
+     WHERE appointment_id = p_appointment_id
+     FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Appointment % does not exist', p_appointment_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    IF v_appointment.status <> 'Scheduled' THEN
+        RAISE EXCEPTION 'Only scheduled appointments can be completed'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF v_appointment.treatment_id IS NULL
+       AND NOT EXISTS (
+           SELECT 1 FROM appointment_treatment
+            WHERE appointment_id = p_appointment_id
+       )
+       AND NOT EXISTS (
+           SELECT 1 FROM consultation_note
+            WHERE appointment_id = p_appointment_id
+       )
+       AND NOT EXISTS (
+           SELECT 1 FROM invoice i
+           JOIN invoice_item ii ON ii.invoice_id = i.invoice_id
+            WHERE i.appointment_id = p_appointment_id
+       ) THEN
+        RAISE EXCEPTION 'A completed appointment requires a treatment or consultation note'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    UPDATE appointment
+       SET status = 'Completed'
+     WHERE appointment_id = p_appointment_id;
+END;
+$$;
