@@ -4,8 +4,8 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
 from app.core.database import get_db
-from app.auth.dependencies import get_current_user, verify_patient_ownership, require_csrf
-from app.api.v1.endpoints._guards import check_branch_scope, database_mutation
+from app.auth.dependencies import get_current_user, verify_patient_ownership, require_csrf, require_role
+from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
 from app.auth.schemas import JWTPayload
 from app.schemas.appointment import AppointmentDetailResponse
 from app.schemas.patient import (
@@ -31,10 +31,20 @@ async def list_patients(
     search: Optional[str] = Query(None, description="Search by patient name or email"),
     branch_id: Optional[int] = Query(None, description="Filter by branch ID"),
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     """Retrieve a paginated list of registered patients with optional filtering."""
     query = "SELECT * FROM patient WHERE 1=1"
     params = []
+
+    if current_user.role.lower() != "admin":
+        check_branch_scope(branch_id if branch_id is not None else current_user.branch_id, current_user)
+        branch_id = current_user.branch_id
+    if current_user.role.lower() == "doctor":
+        if current_user.doctor_id is None:
+            raise HTTPException(403, "A linked doctor profile is required.")
+        query += " AND EXISTS (SELECT 1 FROM appointment a WHERE a.patient_id = patient.patient_id AND a.doctor_id = %s AND a.branch_id = %s)"
+        params.extend([current_user.doctor_id, current_user.branch_id])
 
     if branch_id is not None:
         query += " AND branch_id = %s"
@@ -58,8 +68,10 @@ async def list_patients(
 async def get_patient(
     patient_id: int,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
 ):
     """Retrieve full patient details including branch and emergency contacts."""
+    await _check_patient_access(conn, patient_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
         query = """
             SELECT p.*, b.branch_name
@@ -86,13 +98,16 @@ async def get_patient(
         return PatientDetailResponse(**patient_data)
 
 
-@router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_csrf)])
 async def create_patient(
     payload: PatientCreate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "receptionist_cashier")),
 ):
     """Register a new patient into the system."""
-    async with conn.cursor(row_factory=dict_row) as cur:
+    check_branch_scope(payload.branch_id, current_user)
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))
         if not await cur.fetchone():
             raise HTTPException(
@@ -125,11 +140,12 @@ async def create_patient(
         return PatientResponse(**new_patient)
 
 
-@router.put("/{patient_id}", response_model=PatientResponse)
+@router.put("/{patient_id}", response_model=PatientResponse, dependencies=[Depends(require_csrf)])
 async def update_patient(
     patient_id: int,
     payload: PatientUpdate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
 ):
     """Update details of an existing patient."""
     update_data = payload.model_dump(exclude_unset=True)
@@ -139,7 +155,10 @@ async def update_patient(
             detail="No update fields provided",
         )
 
-    async with conn.cursor(row_factory=dict_row) as cur:
+    if "branch_id" in update_data:
+        check_branch_scope(update_data["branch_id"], current_user)
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await _check_patient_access(conn, patient_id, current_user, lock=True)
         await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (patient_id,))
         if not await cur.fetchone():
             raise HTTPException(
@@ -170,13 +189,15 @@ async def update_patient(
         return PatientResponse(**updated_row)
 
 
-@router.delete("/{patient_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{patient_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_csrf)])
 async def delete_patient(
     patient_id: int,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
 ):
     """Delete a patient record."""
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await _check_patient_access(conn, patient_id, current_user, lock=True)
         await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (patient_id,))
         if not await cur.fetchone():
             raise HTTPException(
@@ -192,8 +213,10 @@ async def delete_patient(
 async def list_emergency_contacts(
     patient_id: int,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
 ):
     """List emergency contacts for a patient."""
+    await _check_patient_access(conn, patient_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (patient_id,))
         if not await cur.fetchone():
@@ -214,14 +237,17 @@ async def list_emergency_contacts(
     "/{patient_id}/emergency-contacts",
     response_model=EmergencyContactResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
 )
 async def create_emergency_contact(
     patient_id: int,
     payload: EmergencyContactCreate,
     conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
 ):
     """Add a new emergency contact for a patient."""
-    async with conn.cursor(row_factory=dict_row) as cur:
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await _check_patient_access(conn, patient_id, current_user, lock=True)
         await cur.execute("SELECT patient_id FROM patient WHERE patient_id = %s;", (patient_id,))
         if not await cur.fetchone():
             raise HTTPException(
@@ -242,15 +268,24 @@ async def create_emergency_contact(
         return EmergencyContactResponse(**new_contact)
 
 
-async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_user: JWTPayload) -> None:
+async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_user: JWTPayload, *, lock: bool = False) -> None:
     verify_patient_ownership(patient_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute("SELECT branch_id FROM patient WHERE patient_id = %s;", (patient_id,))
+        query = "SELECT branch_id FROM patient WHERE patient_id = %s"
+        await cur.execute(query + (" FOR UPDATE;" if lock else ";"), (patient_id,))
         patient = await cur.fetchone()
     if not patient:
         raise HTTPException(404, f"Patient {patient_id} not found")
     if current_user.user_type == "staff":
         check_branch_scope(patient["branch_id"], current_user)
+        if current_user.role.lower() == "doctor":
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT appointment_id FROM appointment WHERE patient_id = %s AND doctor_id = %s AND branch_id = %s LIMIT 1;",
+                    (patient_id, current_user.doctor_id, current_user.branch_id),
+                )
+                if current_user.doctor_id is None or not await cur.fetchone():
+                    raise HTTPException(403, "Doctors can only access patients assigned to their appointments.")
 
 
 # =========================================================================
@@ -292,9 +327,16 @@ async def get_patient_appointments(
             JOIN branch b ON a.branch_id = b.branch_id
             LEFT JOIN treatment t ON a.treatment_id = t.treatment_id
             WHERE a.patient_id = %s
-            ORDER BY a.appointment_date DESC, a.start_time DESC;
         """
-        await cur.execute(query, (patient_id,))
+        params = [patient_id]
+        if current_user.user_type == "staff" and current_user.role.lower() != "admin":
+            query += " AND a.branch_id = %s"
+            params.append(current_user.branch_id)
+            if current_user.role.lower() == "doctor":
+                query += " AND a.doctor_id = %s"
+                params.append(current_user.doctor_id)
+        query += " ORDER BY a.appointment_date DESC, a.start_time DESC;"
+        await cur.execute(query, tuple(params))
         rows = await cur.fetchall()
         return [AppointmentDetailResponse(**row) for row in rows]
 
@@ -340,9 +382,16 @@ async def get_patient_invoices(
             JOIN appointment a ON a.appointment_id = i.appointment_id
             LEFT JOIN doctor d ON d.doctor_id = a.doctor_id
             WHERE a.patient_id = %s
-            ORDER BY i.invoice_date DESC, i.invoice_id DESC;
         """
-        await cur.execute(query, (patient_id,))
+        params = [patient_id]
+        if current_user.user_type == "staff" and current_user.role.lower() != "admin":
+            query += " AND a.branch_id = %s"
+            params.append(current_user.branch_id)
+            if current_user.role.lower() == "doctor":
+                query += " AND a.doctor_id = %s"
+                params.append(current_user.doctor_id)
+        query += " ORDER BY i.invoice_date DESC, i.invoice_id DESC;"
+        await cur.execute(query, tuple(params))
         rows = await cur.fetchall()
         return [PatientInvoiceResponse(**row) for row in rows]
 
@@ -448,8 +497,6 @@ async def update_emergency_contact(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
-    await _check_patient_access(conn, patient_id, current_user)
-
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(
@@ -458,12 +505,13 @@ async def update_emergency_contact(
         )
 
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await _check_patient_access(conn, patient_id, current_user, lock=True)
         # Verify contact exists for this patient
         await cur.execute(
             """
             SELECT emergency_contact_id
             FROM emergency_contact
-            WHERE emergency_contact_id = %s AND patient_id = %s;
+            WHERE emergency_contact_id = %s AND patient_id = %s FOR UPDATE;
             """,
             (contact_id, patient_id),
         )
@@ -504,9 +552,8 @@ async def delete_emergency_contact(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
-    await _check_patient_access(conn, patient_id, current_user)
-
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await _check_patient_access(conn, patient_id, current_user, lock=True)
         await cur.execute(
             """
             SELECT emergency_contact_id
