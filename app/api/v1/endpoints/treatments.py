@@ -82,3 +82,64 @@ async def create_treatment(
         treatment_id = (await cur.fetchone())["treatment_id"]
         await _treatment_query(cur, treatment_id)
         return TreatmentResponse(**await cur.fetchone())
+
+
+@router.put(
+    "/{treatment_id}",
+    response_model=TreatmentResponse,
+    dependencies=[Depends(require_csrf)],
+)
+async def update_treatment(
+    treatment_id: int,
+    payload: TreatmentUpdate,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
+):
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(400, "No update fields provided")
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT treatment_id FROM treatment WHERE treatment_id = %s;", (treatment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(404, f"Treatment {treatment_id} not found")
+        if "category_id" in update_data:
+            await cur.execute(
+                "SELECT category_id FROM treatment_category WHERE category_id = %s;",
+                (update_data["category_id"],),
+            )
+            if not await cur.fetchone():
+                raise HTTPException(422, f"Treatment category {update_data['category_id']} not found")
+        if "service_code" in update_data:
+            await cur.execute(
+                """SELECT treatment_id FROM treatment
+                   WHERE LOWER(service_code) = LOWER(%s) AND treatment_id != %s;""",
+                (update_data["service_code"], treatment_id),
+            )
+            if await cur.fetchone():
+                raise HTTPException(409, "A treatment with this service code already exists.")
+        clauses = [f"{key} = %s" for key in update_data]
+        values = list(update_data.values()) + [treatment_id]
+        await cur.execute(
+            f"UPDATE treatment SET {', '.join(clauses)} WHERE treatment_id = %s;",
+            tuple(values),
+        )
+        await _treatment_query(cur, treatment_id)
+        return TreatmentResponse(**await cur.fetchone())
+
+
+@router.delete(
+    "/{treatment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_csrf)],
+)
+async def delete_treatment(
+    treatment_id: int,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role("admin")),
+):
+    async with database_mutation(conn), conn.cursor() as cur:
+        await cur.execute("SELECT treatment_id FROM treatment WHERE treatment_id = %s;", (treatment_id,))
+        if not await cur.fetchone():
+            raise HTTPException(404, f"Treatment {treatment_id} not found")
+        await cur.execute("DELETE FROM treatment WHERE treatment_id = %s;", (treatment_id,))
+    return None
