@@ -84,3 +84,27 @@ BEGIN
      WHERE appointment_id = p_appointment_id;
 END;
 $$;
+
+CREATE OR REPLACE PROCEDURE sp_cancel_appointment(p_appointment_id INTEGER)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_status VARCHAR(20);
+BEGIN
+    SELECT status INTO v_status
+      FROM appointment
+     WHERE appointment_id = p_appointment_id
+     FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Appointment % does not exist', p_appointment_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    IF v_status <> 'Scheduled' THEN
+        RAISE EXCEPTION 'Only scheduled appointments can be cancelled'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    UPDATE appointment
+       SET status = 'Cancelled'
+     WHERE appointment_id = p_appointment_id;
+END;
+$$;
