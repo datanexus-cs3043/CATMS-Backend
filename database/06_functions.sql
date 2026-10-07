@@ -195,3 +195,97 @@ BEGIN
     RETURN NULL;
 END;
 $$;
+
+
+CREATE OR REPLACE FUNCTION fn_validate_appointment()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_original appointment%ROWTYPE;
+BEGIN
+    IF NEW.end_time <= NEW.start_time THEN
+        RAISE EXCEPTION 'Appointment end time must be later than start time'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF TG_OP = 'UPDATE'
+       AND OLD.status IN ('Completed', 'Cancelled')
+       AND NEW.status IS DISTINCT FROM OLD.status THEN
+        RAISE EXCEPTION 'Completed or cancelled appointments cannot be reopened'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NEW.original_appointment_id IS NOT NULL THEN
+        SELECT * INTO v_original
+          FROM appointment
+         WHERE appointment_id = NEW.original_appointment_id
+         FOR UPDATE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Original appointment % does not exist',
+                NEW.original_appointment_id
+                USING ERRCODE = 'foreign_key_violation';
+        END IF;
+        IF v_original.patient_id <> NEW.patient_id
+           OR v_original.doctor_id <> NEW.doctor_id
+           OR v_original.branch_id <> NEW.branch_id THEN
+            RAISE EXCEPTION 'Rescheduled appointment must retain the patient, doctor, and branch'
+                USING ERRCODE = 'check_violation';
+        END IF;
+        IF TG_OP = 'INSERT' THEN
+            IF v_original.status <> 'Scheduled' THEN
+                RAISE EXCEPTION 'Only a scheduled appointment can be rescheduled'
+                    USING ERRCODE = 'check_violation';
+            END IF;
+            UPDATE appointment
+               SET status = 'Cancelled'
+             WHERE appointment_id = NEW.original_appointment_id;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION fn_sync_appointment_treatment()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_unitprice NUMERIC(10, 2);
+BEGIN
+    IF TG_OP = 'UPDATE'
+       AND OLD.treatment_id IS DISTINCT FROM NEW.treatment_id
+       AND OLD.treatment_id IS NOT NULL THEN
+        DELETE FROM appointment_treatment
+         WHERE appointment_id = NEW.appointment_id
+           AND treatment_id = OLD.treatment_id
+           AND is_primary;
+    END IF;
+
+    IF NEW.treatment_id IS NOT NULL THEN
+        SELECT standard_price INTO v_unitprice
+          FROM treatment
+         WHERE treatment_id = NEW.treatment_id;
+        INSERT INTO appointment_treatment
+            (appointment_id, treatment_id, unitprice, is_primary)
+        VALUES
+            (NEW.appointment_id, NEW.treatment_id, v_unitprice, TRUE)
+        ON CONFLICT (appointment_id, treatment_id)
+        DO UPDATE SET is_primary = TRUE;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION fn_mark_appointment_completed()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE appointment
+       SET status = 'Completed'
+     WHERE appointment_id = NEW.appointment_id
+       AND status = 'Scheduled';
+    RETURN NULL;
+END;
+$$;
