@@ -116,15 +116,9 @@ async def get_me(
 ):
     user = await get_user_by_id(conn, current_user.user_id)
     if not user:
-        # Fallback to token claims if DB record is not found
-        return AuthUser(
-            user_id=current_user.user_id,
-            user_type=current_user.user_type,
-            role=current_user.role,
-            staff_id=current_user.staff_id,
-            patient_id=current_user.patient_id,
-            doctor_id=current_user.doctor_id,
-            branch_id=current_user.branch_id,
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials are no longer valid.",
         )
     return user
 
@@ -157,4 +151,3 @@ async def get_csrf_token(request: Request):
 
     csrf_token = generate_csrf_token(user_id_str)
     return CSRFResponse(csrf_token=csrf_token)
-

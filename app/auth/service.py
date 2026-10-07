@@ -129,18 +129,8 @@ async def authenticate_user(
                     branch_id=patient_row.get("branch_id"),
                 )
             else:
-                # Default fallback for administrative or patient user accounts not linked to secondary table
-                fallback_role = UserRole.ADMIN.value if "admin" in user_name.lower() else UserRole.PATIENT.value
-                fallback_type = UserType.STAFF.value if fallback_role == UserRole.ADMIN.value else UserType.PATIENT.value
-                auth_user = AuthUser(
-                    user_id=user_id,
-                    user_type=fallback_type,
-                    role=fallback_role,
-                    username=user_name,
-                    email=email,
-                    first_name=user_row.get("first_name"),
-                    last_name=user_row.get("last_name"),
-                )
+                # Credentials do not establish a role without a resolved profile.
+                return None
 
         # 5. Record login audit in users_logins table
         try:
@@ -238,15 +228,4 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
                 branch_id=patient_row.get("branch_id"),
             )
 
-        fallback_role = UserRole.ADMIN.value if "admin" in (user_row.get("username") or "").lower() else UserRole.PATIENT.value
-        fallback_type = UserType.STAFF.value if fallback_role == UserRole.ADMIN.value else UserType.PATIENT.value
-        return AuthUser(
-            user_id=user_id,
-            user_type=fallback_type,
-            role=fallback_role,
-            username=user_row.get("username"),
-            email=email,
-            first_name=user_row.get("first_name"),
-            last_name=user_row.get("last_name"),
-        )
-
+        return None
