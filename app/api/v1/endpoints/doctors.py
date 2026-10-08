@@ -32,9 +32,10 @@ async def list_doctors(
 ):
     """Retrieve list of registered doctors with optional search and branch filtering."""
     query = """
-        SELECT d.*
+        SELECT d.*, s.branch_id, b.branch_name, s.email, s.contact_details
         FROM doctor d
         JOIN staff s ON d.staff_id = s.staff_id
+        LEFT JOIN branch b ON s.branch_id = b.branch_id
         WHERE 1=1
     """
     params = []
@@ -54,7 +55,35 @@ async def list_doctors(
     async with conn.cursor() as cur:
         await cur.execute(query, tuple(params))
         rows = await cur.fetchall()
-        return [DoctorResponse(**row) for row in rows]
+        if not rows:
+            return []
+
+        doctor_ids = [row["doctor_id"] for row in rows]
+        placeholders = ", ".join(["%s"] * len(doctor_ids))
+        await cur.execute(
+            f"""
+                SELECT ds.doctor_id, sp.specialty_id, sp.specialty_name, sp.description
+                FROM doctor_specialty ds
+                JOIN specialty sp ON sp.specialty_id = ds.specialty_id
+                WHERE ds.doctor_id IN ({placeholders})
+                ORDER BY sp.specialty_name ASC;
+            """,
+            tuple(doctor_ids),
+        )
+        specialty_rows = await cur.fetchall()
+        specialties_by_doctor = {doctor_id: [] for doctor_id in doctor_ids}
+        for specialty in specialty_rows:
+            specialties_by_doctor[specialty["doctor_id"]].append(
+                SpecialtyResponse(**specialty)
+            )
+
+        return [
+            DoctorResponse(
+                **row,
+                specialties=specialties_by_doctor[row["doctor_id"]],
+            )
+            for row in rows
+        ]
 
 
 @router.get("/{doctor_id}", response_model=DoctorDetailResponse)

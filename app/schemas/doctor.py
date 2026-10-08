@@ -40,16 +40,17 @@ class DoctorUpdate(BaseModel):
 
 class DoctorResponse(DoctorBase):
     doctor_id: int
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class DoctorDetailResponse(DoctorResponse):
     branch_id: Optional[int] = None
     branch_name: Optional[str] = None
     email: Optional[str] = None
     contact_details: Optional[str] = None
     specialties: List[SpecialtyResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DoctorDetailResponse(DoctorResponse):
+    pass
 
 
 class DoctorAppointmentResponse(BaseModel):
