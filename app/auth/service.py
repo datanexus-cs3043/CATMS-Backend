@@ -73,6 +73,9 @@ async def authenticate_user(
                 s.branch_id, 
                 s.staff_type, 
                 s.role,
+                s.first_name,
+                s.last_name,
+                s.email,
                 d.doctor_id
             FROM staff s
             LEFT JOIN doctor d ON d.staff_id = s.staff_id
@@ -93,9 +96,9 @@ async def authenticate_user(
                 user_type=UserType.STAFF.value,
                 role=resolved_role,
                 username=user_name,
-                email=email,
-                first_name=user_row.get("first_name"),
-                last_name=user_row.get("last_name"),
+                email=staff_row.get("email") or email,
+                first_name=staff_row.get("first_name") or user_row.get("first_name"),
+                last_name=staff_row.get("last_name") or user_row.get("last_name"),
                 staff_id=staff_row["staff_id"],
                 doctor_id=staff_row.get("doctor_id"),
                 branch_id=staff_row.get("branch_id"),
@@ -170,6 +173,9 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
                 s.branch_id, 
                 s.staff_type, 
                 s.role,
+                s.first_name,
+                s.last_name,
+                s.email,
                 d.doctor_id
             FROM staff s
             LEFT JOIN doctor d ON d.staff_id = s.staff_id
@@ -189,9 +195,9 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
                 user_type=UserType.STAFF.value,
                 role=resolved_role,
                 username=user_row.get("username"),
-                email=email,
-                first_name=user_row.get("first_name"),
-                last_name=user_row.get("last_name"),
+                email=staff_row.get("email") or email,
+                first_name=staff_row.get("first_name") or user_row.get("first_name"),
+                last_name=staff_row.get("last_name") or user_row.get("last_name"),
                 staff_id=staff_row["staff_id"],
                 doctor_id=staff_row.get("doctor_id"),
                 branch_id=staff_row.get("branch_id"),
