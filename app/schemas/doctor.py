@@ -66,8 +66,6 @@ class DoctorUpdate(BaseModel):
 
 class DoctorResponse(DoctorBase):
     doctor_id: int
-<<<<<<< HEAD
-=======
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -75,23 +73,19 @@ class DoctorResponse(DoctorBase):
 class DoctorDirectoryResponse(DoctorResponse):
     branch_id: int
     branch_name: str
+    email: Optional[str] = None
+    contact_details: Optional[str] = None
     specialties: List[SpecialtyResponse] = Field(default_factory=list)
 
 
 class DoctorDetailResponse(DoctorResponse):
->>>>>>> ff9a26e1f72325fb9e7081666636a107113db461
     branch_id: Optional[int] = None
     branch_name: Optional[str] = None
     email: Optional[str] = None
     contact_details: Optional[str] = None
-    specialties: List[SpecialtyResponse] = []
+    specialties: List[SpecialtyResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class DoctorDetailResponse(DoctorResponse):
-    pass
-
 
 class DoctorAppointmentResponse(BaseModel):
     appointment_id: int

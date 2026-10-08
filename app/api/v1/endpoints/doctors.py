@@ -35,17 +35,10 @@ async def list_doctors(
 ):
     """Retrieve list of registered doctors with optional search and branch filtering."""
     query = """
-<<<<<<< HEAD
-        SELECT d.*, s.branch_id, b.branch_name, s.email, s.contact_details
-        FROM doctor d
-        JOIN staff s ON d.staff_id = s.staff_id
-        LEFT JOIN branch b ON s.branch_id = b.branch_id
-=======
         SELECT d.*, s.branch_id, b.branch_name
         FROM doctor d
         JOIN staff s ON d.staff_id = s.staff_id
         JOIN branch b ON s.branch_id = b.branch_id
->>>>>>> ff9a26e1f72325fb9e7081666636a107113db461
         WHERE 1=1
     """
     params = []
@@ -72,35 +65,6 @@ async def list_doctors(
         rows = await cur.fetchall()
         if not rows:
             return []
-<<<<<<< HEAD
-
-        doctor_ids = [row["doctor_id"] for row in rows]
-        placeholders = ", ".join(["%s"] * len(doctor_ids))
-        await cur.execute(
-            f"""
-                SELECT ds.doctor_id, sp.specialty_id, sp.specialty_name, sp.description
-                FROM doctor_specialty ds
-                JOIN specialty sp ON sp.specialty_id = ds.specialty_id
-                WHERE ds.doctor_id IN ({placeholders})
-                ORDER BY sp.specialty_name ASC;
-            """,
-            tuple(doctor_ids),
-        )
-        specialty_rows = await cur.fetchall()
-        specialties_by_doctor = {doctor_id: [] for doctor_id in doctor_ids}
-        for specialty in specialty_rows:
-            specialties_by_doctor[specialty["doctor_id"]].append(
-                SpecialtyResponse(**specialty)
-            )
-
-        return [
-            DoctorResponse(
-                **row,
-                specialties=specialties_by_doctor[row["doctor_id"]],
-            )
-            for row in rows
-        ]
-=======
         # Load specialties once for this page, rather than requesting each profile.
         await cur.execute("""
             SELECT ds.doctor_id, sp.*
@@ -114,7 +78,6 @@ async def list_doctors(
             specialties_by_doctor.setdefault(specialty["doctor_id"], []).append(SpecialtyResponse(**specialty))
         return [DoctorDirectoryResponse(**row, specialties=specialties_by_doctor.get(row["doctor_id"], []))
                 for row in rows]
->>>>>>> ff9a26e1f72325fb9e7081666636a107113db461
 
 
 @router.get("/{doctor_id}", response_model=DoctorDetailResponse)
