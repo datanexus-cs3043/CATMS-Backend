@@ -24,6 +24,14 @@ from app.schemas.doctor import (
 router = APIRouter(prefix="/doctors", tags=["Doctors"])
 
 
+def _split_doctor_name(display_name: str, current_last_name: str) -> tuple[str, str]:
+    """Map the doctor's display name to the staff directory's first/last names."""
+    parts = display_name.removeprefix("Dr.").strip().split()
+    if len(parts) < 2:
+        return parts[0], current_last_name
+    return " ".join(parts[:-1]), parts[-1]
+
+
 @router.get("", response_model=List[DoctorDirectoryResponse])
 async def list_doctors(
     skip: int = Query(0, ge=0, description="Pagination offset"),
@@ -168,8 +176,18 @@ async def update_doctor(
         )
 
     async with database_mutation(conn), conn.cursor() as cur:
-        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s FOR UPDATE;", (doctor_id,))
-        if not await cur.fetchone():
+        await cur.execute(
+            """
+            SELECT d.doctor_id, d.staff_id, s.last_name
+            FROM doctor d
+            JOIN staff s ON s.staff_id = d.staff_id
+            WHERE d.doctor_id = %s
+            FOR UPDATE OF d, s;
+            """,
+            (doctor_id,),
+        )
+        existing = await cur.fetchone()
+        if not existing:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Doctor with id {doctor_id} not found",
@@ -187,6 +205,21 @@ async def update_doctor(
         """
         await cur.execute(update_query, tuple(values))
         updated_doc = await cur.fetchone()
+
+        if "doctor_name" in update_data:
+            first_name, last_name = _split_doctor_name(
+                update_data["doctor_name"],
+                existing["last_name"],
+            )
+            await cur.execute(
+                """
+                UPDATE staff
+                SET first_name = %s, last_name = %s
+                WHERE staff_id = %s;
+                """,
+                (first_name, last_name, existing["staff_id"]),
+            )
+
         return DoctorResponse(**updated_doc)
 
 
