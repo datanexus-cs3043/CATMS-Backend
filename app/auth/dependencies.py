@@ -1,12 +1,16 @@
 import logging
 from typing import Callable, List, Optional
 import jwt
+from pydantic import ValidationError
 from fastapi import Request, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from psycopg import AsyncConnection
 
 from app.core.config import settings
+from app.core.database import get_db
 from app.auth.security import decode_access_token, verify_csrf_token
 from app.auth.schemas import JWTPayload, UserType, UserRole
+from app.auth.service import get_user_by_id
 
 logger = logging.getLogger("medsync.auth.dependencies")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -18,12 +22,14 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 async def get_current_user(
     request: Request,
-    bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)
+    bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    conn: AsyncConnection = Depends(get_db),
 ) -> JWTPayload:
     """
     Retrieves and validates the JWT from either:
     1. The HttpOnly cookie (primary for browser / React).
     2. The Authorization header (Bearer token fallback for API testing).
+    Account links and permissions must still match the current database profile.
     """
     token = request.cookies.get(settings.COOKIE_NAME)
     
@@ -39,18 +45,27 @@ async def get_current_user(
 
     try:
         payload = decode_access_token(token)
-        return JWTPayload(**payload)
+        claims = JWTPayload(**payload)
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication token has expired. Please log in again."
         )
-    except jwt.PyJWTError as e:
-        logger.warning(f"Invalid JWT token: {e}")
+    except (jwt.PyJWTError, ValidationError) as e:
+        logger.warning("Invalid JWT token: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token."
         )
+
+    user = await get_user_by_id(conn, claims.user_id)
+    authority_fields = ("user_type", "role", "staff_id", "patient_id", "doctor_id", "branch_id")
+    if user is None or any(getattr(claims, field) != getattr(user, field) for field in authority_fields):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials have changed. Please log in again.",
+        )
+    return claims
 
 
 async def require_authenticated_user(
@@ -163,3 +178,14 @@ async def require_csrf(request: Request) -> None:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="CSRF validation failed: Missing or invalid X-CSRF-Token header."
             )
+
+
+async def require_session_csrf(
+    request: Request,
+    current_user: JWTPayload = Depends(get_current_user),
+) -> None:
+    """Require a signed CSRF token belonging to the currently authenticated account."""
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        csrf_token = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken")
+        if not verify_csrf_token(csrf_token, expected_user_identifier=str(current_user.user_id)):
+            raise HTTPException(403, "CSRF validation failed: Token does not match the current account.")

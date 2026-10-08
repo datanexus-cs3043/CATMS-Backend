@@ -64,9 +64,8 @@ async def authenticate_user(
         user_id = user_row["user_id"]
         user_name = user_row["username"]
         email = user_row.get("email")
-        contact_details = user_row.get("contact_details")
 
-        # 3. Check if user is associated with a Staff record
+        # 3. Resolve staff ownership through the existing account link, not email.
         await cur.execute(
             """
             SELECT 
@@ -78,10 +77,10 @@ async def authenticate_user(
             FROM staff s
             LEFT JOIN doctor d ON d.staff_id = s.staff_id
             LEFT JOIN users_logins ul ON ul.users_logins_id = s.users_logins_id
-            WHERE ul.user_id = %s OR (s.email IS NOT NULL AND LOWER(s.email) = LOWER(%s))
+            WHERE ul.user_id = %s
             LIMIT 1;
             """,
-            (user_id, email or "")
+            (user_id,)
         )
         staff_row = await cur.fetchone()
 
@@ -102,17 +101,15 @@ async def authenticate_user(
                 branch_id=staff_row.get("branch_id"),
             )
         else:
-            # 4. Check if user is associated with a Patient record
+            # 4. Resolve patient ownership by its explicit account link, not contact details.
             await cur.execute(
                 """
                 SELECT patient_id, branch_id
                 FROM patient
                 WHERE user_id = %s
-                   OR (email IS NOT NULL AND LOWER(email) = LOWER(%s))
-                   OR (contact_details IS NOT NULL AND contact_details = %s)
                 LIMIT 1;
                 """,
-                (user_id, email or "", contact_details or "")
+                (user_id,)
             )
             patient_row = await cur.fetchone()
 
@@ -164,7 +161,6 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
             return None
 
         email = user_row.get("email")
-        contact_details = user_row.get("contact_details")
 
         # Check Staff
         await cur.execute(
@@ -178,10 +174,10 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
             FROM staff s
             LEFT JOIN doctor d ON d.staff_id = s.staff_id
             LEFT JOIN users_logins ul ON ul.users_logins_id = s.users_logins_id
-            WHERE ul.user_id = %s OR (s.email IS NOT NULL AND LOWER(s.email) = LOWER(%s))
+            WHERE ul.user_id = %s
             LIMIT 1;
             """,
-            (user_id, email or "")
+            (user_id,)
         )
         staff_row = await cur.fetchone()
 
@@ -207,11 +203,9 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
             SELECT patient_id, branch_id
             FROM patient
             WHERE user_id = %s
-               OR (email IS NOT NULL AND LOWER(email) = LOWER(%s))
-               OR (contact_details IS NOT NULL AND contact_details = %s)
             LIMIT 1;
             """,
-            (user_id, email or "", contact_details or "")
+            (user_id,)
         )
         patient_row = await cur.fetchone()
 

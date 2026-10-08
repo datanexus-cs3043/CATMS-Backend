@@ -142,7 +142,11 @@ def generate_csrf_token(user_identifier: str = "guest") -> str:
     return f"{payload_hex}.{signature}"
 
 
-def verify_csrf_token(csrf_token: str, max_age_seconds: int = 7200) -> bool:
+def verify_csrf_token(
+    csrf_token: str,
+    max_age_seconds: int = 7200,
+    expected_user_identifier: Optional[str] = None,
+) -> bool:
     """
     Verifies the HMAC signature and timestamp validity of a CSRF token.
     """
@@ -165,6 +169,9 @@ def verify_csrf_token(csrf_token: str, max_age_seconds: int = 7200) -> bool:
         if len(parts) < 3:
             return False
 
+        if expected_user_identifier is not None and parts[0] != expected_user_identifier:
+            return False
+
         timestamp = int(parts[1])
         now = int(time.time())
 
@@ -175,4 +182,3 @@ def verify_csrf_token(csrf_token: str, max_age_seconds: int = 7200) -> bool:
         return True
     except Exception:
         return False
-

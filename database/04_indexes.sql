@@ -11,6 +11,8 @@ CREATE INDEX idx_policy_patient_id ON insurance_policy(patient_id);
 CREATE INDEX idx_policy_provider_id ON insurance_policy(provider_id);
 CREATE INDEX idx_treatment_category_id ON treatment(category_id);
 CREATE INDEX idx_doctor_staff_id ON doctor(staff_id);
+-- The API trims names; also protect direct writes with surrounding spaces.
+CREATE UNIQUE INDEX uq_specialty_name_normalized ON specialty (LOWER(BTRIM(specialty_name)));
 CREATE INDEX idx_appointment_patient_id ON appointment(patient_id);
 CREATE INDEX idx_appointment_doctor_id ON appointment(doctor_id);
 CREATE INDEX idx_appointment_branch_id ON appointment(branch_id);

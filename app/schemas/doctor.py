@@ -1,6 +1,6 @@
 from datetime import date, time
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SpecialtyBase(BaseModel):
@@ -10,6 +10,18 @@ class SpecialtyBase(BaseModel):
 
 class SpecialtyCreate(SpecialtyBase):
     pass
+
+
+class DoctorSpecialtyCreate(SpecialtyCreate):
+    specialty_name: str = Field(min_length=1, max_length=150)
+    description: Optional[str] = Field(None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("specialty_name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class SpecialtyUpdate(BaseModel):
@@ -24,22 +36,50 @@ class SpecialtyResponse(SpecialtyBase):
 
 
 class DoctorBase(BaseModel):
-    staff_id: int
-    doctor_name: str
-    doctor_license_number: str
+    staff_id: int = Field(gt=0)
+    doctor_name: str = Field(min_length=1, max_length=150)
+    doctor_license_number: str = Field(min_length=1, max_length=100)
+
+    @field_validator("doctor_name", "doctor_license_number", mode="before")
+    @classmethod
+    def trim_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class DoctorCreate(DoctorBase):
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class DoctorUpdate(BaseModel):
-    doctor_name: Optional[str] = None
-    doctor_license_number: Optional[str] = None
+    doctor_name: Optional[str] = Field(None, min_length=1, max_length=150)
+    doctor_license_number: Optional[str] = Field(None, min_length=1, max_length=100)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("doctor_name", "doctor_license_number", mode="before")
+    @classmethod
+    def validate_supplied_text(cls, value):
+        if value is None:
+            raise ValueError("Supplied doctor fields cannot be null")
+        return value.strip() if isinstance(value, str) else value
 
 
 class DoctorResponse(DoctorBase):
     doctor_id: int
+<<<<<<< HEAD
+=======
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DoctorDirectoryResponse(DoctorResponse):
+    branch_id: int
+    branch_name: str
+    specialties: List[SpecialtyResponse] = Field(default_factory=list)
+
+
+class DoctorDetailResponse(DoctorResponse):
+>>>>>>> ff9a26e1f72325fb9e7081666636a107113db461
     branch_id: Optional[int] = None
     branch_name: Optional[str] = None
     email: Optional[str] = None
