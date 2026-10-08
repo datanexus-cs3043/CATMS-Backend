@@ -12,6 +12,18 @@ class SpecialtyCreate(SpecialtyBase):
     pass
 
 
+class DoctorSpecialtyCreate(SpecialtyCreate):
+    specialty_name: str = Field(min_length=1, max_length=150)
+    description: Optional[str] = Field(None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("specialty_name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
 class SpecialtyUpdate(BaseModel):
     specialty_name: Optional[str] = None
     description: Optional[str] = None
