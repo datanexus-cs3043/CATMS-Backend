@@ -1,11 +1,11 @@
 from datetime import date
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query, HTTPException, status
+from fastapi import APIRouter, Depends, Path, Query, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
 from app.core.database import get_db
-from app.auth.dependencies import get_current_user, require_role, require_csrf
+from app.auth.dependencies import get_current_user, require_role, require_csrf, require_session_csrf
 from app.auth.schemas import JWTPayload
 from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
 from app.schemas.doctor import (
@@ -13,6 +13,7 @@ from app.schemas.doctor import (
     DoctorUpdate,
     DoctorResponse,
     DoctorDetailResponse,
+    DoctorDirectoryResponse,
     SpecialtyCreate,
     SpecialtyResponse,
     DoctorAppointmentResponse,
@@ -22,19 +23,21 @@ from app.schemas.doctor import (
 router = APIRouter(prefix="/doctors", tags=["Doctors"])
 
 
-@router.get("", response_model=List[DoctorResponse])
+@router.get("", response_model=List[DoctorDirectoryResponse])
 async def list_doctors(
     skip: int = Query(0, ge=0, description="Pagination offset"),
     limit: int = Query(50, ge=1, le=100, description="Page size"),
     search: Optional[str] = Query(None, description="Search doctor name or license number"),
-    branch_id: Optional[int] = Query(None, description="Filter doctors by branch ID"),
+    branch_id: Optional[int] = Query(None, gt=0, description="Filter doctors by branch ID"),
+    specialty_id: Optional[int] = Query(None, gt=0, description="Filter doctors by specialty ID"),
     conn: AsyncConnection = Depends(get_db),
 ):
     """Retrieve list of registered doctors with optional search and branch filtering."""
     query = """
-        SELECT d.*
+        SELECT d.*, s.branch_id, b.branch_name
         FROM doctor d
         JOIN staff s ON d.staff_id = s.staff_id
+        JOIN branch b ON s.branch_id = b.branch_id
         WHERE 1=1
     """
     params = []
@@ -42,6 +45,11 @@ async def list_doctors(
     if branch_id is not None:
         query += " AND s.branch_id = %s"
         params.append(branch_id)
+
+    if specialty_id is not None:
+        query += """ AND EXISTS (SELECT 1 FROM doctor_specialty ds
+                    WHERE ds.doctor_id = d.doctor_id AND ds.specialty_id = %s)"""
+        params.append(specialty_id)
 
     if search:
         query += " AND (d.doctor_name ILIKE %s OR d.doctor_license_number ILIKE %s)"
@@ -54,12 +62,26 @@ async def list_doctors(
     async with conn.cursor() as cur:
         await cur.execute(query, tuple(params))
         rows = await cur.fetchall()
-        return [DoctorResponse(**row) for row in rows]
+        if not rows:
+            return []
+        # Load specialties once for this page, rather than requesting each profile.
+        await cur.execute("""
+            SELECT ds.doctor_id, sp.*
+            FROM doctor_specialty ds
+            JOIN specialty sp ON ds.specialty_id = sp.specialty_id
+            WHERE ds.doctor_id = ANY(%s)
+            ORDER BY sp.specialty_name, sp.specialty_id;
+        """, ([row["doctor_id"] for row in rows],))
+        specialties_by_doctor = {}
+        for specialty in await cur.fetchall():
+            specialties_by_doctor.setdefault(specialty["doctor_id"], []).append(SpecialtyResponse(**specialty))
+        return [DoctorDirectoryResponse(**row, specialties=specialties_by_doctor.get(row["doctor_id"], []))
+                for row in rows]
 
 
 @router.get("/{doctor_id}", response_model=DoctorDetailResponse)
 async def get_doctor(
-    doctor_id: int,
+    doctor_id: int = Path(..., gt=0),
     conn: AsyncConnection = Depends(get_db),
 ):
     """Retrieve full doctor profile including assigned specialties and branch."""
@@ -94,7 +116,7 @@ async def get_doctor(
 
 
 @router.post("", response_model=DoctorResponse, status_code=status.HTTP_201_CREATED,
-             dependencies=[Depends(require_csrf)])
+             dependencies=[Depends(require_session_csrf)])
 async def create_doctor(
     payload: DoctorCreate,
     conn: AsyncConnection = Depends(get_db),
@@ -129,10 +151,10 @@ async def create_doctor(
         return DoctorResponse(**new_doc)
 
 
-@router.put("/{doctor_id}", response_model=DoctorResponse, dependencies=[Depends(require_csrf)])
+@router.put("/{doctor_id}", response_model=DoctorResponse, dependencies=[Depends(require_session_csrf)])
 async def update_doctor(
-    doctor_id: int,
     payload: DoctorUpdate,
+    doctor_id: int = Path(..., gt=0),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin")),
 ):
@@ -145,7 +167,7 @@ async def update_doctor(
         )
 
     async with database_mutation(conn), conn.cursor() as cur:
-        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s;", (doctor_id,))
+        await cur.execute("SELECT doctor_id FROM doctor WHERE doctor_id = %s FOR UPDATE;", (doctor_id,))
         if not await cur.fetchone():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
