@@ -28,7 +28,10 @@ logger = logging.getLogger("medsync.main")
 async def lifespan(app: FastAPI):
     """Manages application lifecycle: connects psycopg3 pool on startup, closes it on shutdown."""
     logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}...")
-    await connect_to_database()
+    try:
+        await connect_to_database()
+    except Exception:
+        logger.warning("[Database] Startup is continuing without a database connection.")
     yield
     logger.info(f"Shutting down {settings.PROJECT_NAME}...")
     await close_database_connection()

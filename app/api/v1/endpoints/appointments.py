@@ -51,38 +51,70 @@ async def _get_appointment_row(conn: AsyncConnection, appointment_id: int) -> di
 
 @router.post(
     "/{appointment_id}/complete",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    response_model=AppointmentResponse,
     summary="Complete appointment",
+    dependencies=[Depends(require_csrf)],
+)
+@router.put(
+    "/{appointment_id}/complete",
+    response_model=AppointmentResponse,
+    summary="Complete appointment (compatibility alias)",
+    dependencies=[Depends(require_csrf)],
 )
 async def complete_appointment(
     appointment_id: int,
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
-    appointment = await _get_appointment_row(conn, appointment_id)
-    _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Appointment completion requires a persisted appointment status field.",
-    )
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM appointment WHERE appointment_id = %s FOR UPDATE;",
+            (appointment_id,),
+        )
+        appointment = await cur.fetchone()
+        if not appointment:
+            raise HTTPException(404, f"Appointment {appointment_id} not found")
+        _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
+        await cur.execute(
+            "CALL sp_complete_appointment(%s);",
+            (appointment_id,),
+        )
+        await cur.execute("SELECT * FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        return AppointmentResponse(**await cur.fetchone())
 
 
 @router.post(
     "/{appointment_id}/cancel",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    response_model=AppointmentResponse,
     summary="Cancel appointment",
+    dependencies=[Depends(require_csrf)],
+)
+@router.put(
+    "/{appointment_id}/cancel",
+    response_model=AppointmentResponse,
+    summary="Cancel appointment (compatibility alias)",
+    dependencies=[Depends(require_csrf)],
 )
 async def cancel_appointment(
     appointment_id: int,
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
-    appointment = await _get_appointment_row(conn, appointment_id)
-    _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Appointment cancellation requires a persisted appointment status field.",
-    )
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM appointment WHERE appointment_id = %s FOR UPDATE;",
+            (appointment_id,),
+        )
+        appointment = await cur.fetchone()
+        if not appointment:
+            raise HTTPException(404, f"Appointment {appointment_id} not found")
+        _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
+        await cur.execute(
+            "CALL sp_cancel_appointment(%s);",
+            (appointment_id,),
+        )
+        await cur.execute("SELECT * FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        return AppointmentResponse(**await cur.fetchone())
 
 
 @router.post(
@@ -531,6 +563,4 @@ async def delete_consultation_note(
         await _get_note_row(conn, note_id, current_user, lock=True)
         await cur.execute("DELETE FROM consultation_note WHERE note_id = %s;", (note_id,))
     return None
-
-
 

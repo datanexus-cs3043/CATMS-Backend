@@ -10,6 +10,7 @@ if sys.platform == "win32":
 from psycopg_pool import AsyncConnectionPool
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from fastapi import HTTPException
 
 from app.core.config import settings
 
@@ -30,9 +31,10 @@ async def connect_to_database() -> None:
         logger.warning("[Database] No database connection string provided. Database features will be disabled.")
         return
 
+    pool: Optional[AsyncConnectionPool] = None
     try:
         logger.info("[Database] Initializing PostgreSQL psycopg3 connection pool...")
-        db_pool = AsyncConnectionPool(
+        pool = AsyncConnectionPool(
             conninfo=conninfo,
             min_size=settings.DB_POOL_MIN_SIZE,
             max_size=settings.DB_POOL_MAX_SIZE,
@@ -43,19 +45,25 @@ async def connect_to_database() -> None:
             },
             open=False,
         )
-        await db_pool.open()
-        
+        await pool.open()
+
         # Test the connection pool immediately
-        async with db_pool.connection() as conn:
+        async with pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("SELECT current_database(), version();")
                 result = await cur.fetchone()
                 db_name = result["current_database"] if result else "unknown"
                 logger.info(f"[Database] Successfully connected to PostgreSQL database '{db_name}'!")
-    except Exception as e:
-        logger.error(f"[Database] Failed to connect to PostgreSQL database: {e}")
+        db_pool = pool
+    except Exception:
+        logger.exception("[Database] Failed to connect to PostgreSQL database")
+        if pool is not None:
+            try:
+                await pool.close()
+            except Exception:
+                logger.exception("[Database] Failed to close the unsuccessful connection pool")
         db_pool = None
-        raise e
+        raise
 
 
 async def close_database_connection() -> None:
@@ -83,7 +91,10 @@ async def get_db() -> AsyncGenerator[AsyncConnection, None]:
         await connect_to_database()
 
     if db_pool is None:
-        raise RuntimeError("Database connection pool is not initialized. Check your database configuration.")
+        raise HTTPException(
+            status_code=503,
+            detail="Database service is unavailable.",
+        )
 
     async with db_pool.connection() as connection:
         yield connection
