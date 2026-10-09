@@ -49,48 +49,72 @@ async def _get_appointment_row(conn: AsyncConnection, appointment_id: int) -> di
     return appointment
 
 
-@router.api_route(
+@router.post(
     "/{appointment_id}/complete",
-    methods=["POST", "PUT"],
     response_model=AppointmentResponse,
     summary="Complete appointment",
+    dependencies=[Depends(require_csrf)],
+)
+@router.put(
+    "/{appointment_id}/complete",
+    response_model=AppointmentResponse,
+    summary="Complete appointment (compatibility alias)",
+    dependencies=[Depends(require_csrf)],
 )
 async def complete_appointment(
     appointment_id: int,
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
-    appointment = await _get_appointment_row(conn, appointment_id)
-    _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "UPDATE appointment SET status = 'Completed' WHERE appointment_id = %s RETURNING *;",
+            "SELECT * FROM appointment WHERE appointment_id = %s FOR UPDATE;",
             (appointment_id,),
         )
-        row = await cur.fetchone()
-        return AppointmentResponse(**row)
+        appointment = await cur.fetchone()
+        if not appointment:
+            raise HTTPException(404, f"Appointment {appointment_id} not found")
+        _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
+        await cur.execute(
+            "CALL sp_complete_appointment(%s);",
+            (appointment_id,),
+        )
+        await cur.execute("SELECT * FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        return AppointmentResponse(**await cur.fetchone())
 
 
-@router.api_route(
+@router.post(
     "/{appointment_id}/cancel",
-    methods=["POST", "PUT"],
     response_model=AppointmentResponse,
     summary="Cancel appointment",
+    dependencies=[Depends(require_csrf)],
+)
+@router.put(
+    "/{appointment_id}/cancel",
+    response_model=AppointmentResponse,
+    summary="Cancel appointment (compatibility alias)",
+    dependencies=[Depends(require_csrf)],
 )
 async def cancel_appointment(
     appointment_id: int,
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
-    appointment = await _get_appointment_row(conn, appointment_id)
-    _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "UPDATE appointment SET status = 'Cancelled' WHERE appointment_id = %s RETURNING *;",
+            "SELECT * FROM appointment WHERE appointment_id = %s FOR UPDATE;",
             (appointment_id,),
         )
-        row = await cur.fetchone()
-        return AppointmentResponse(**row)
+        appointment = await cur.fetchone()
+        if not appointment:
+            raise HTTPException(404, f"Appointment {appointment_id} not found")
+        _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
+        await cur.execute(
+            "CALL sp_cancel_appointment(%s);",
+            (appointment_id,),
+        )
+        await cur.execute("SELECT * FROM appointment WHERE appointment_id = %s;", (appointment_id,))
+        return AppointmentResponse(**await cur.fetchone())
 
 
 @router.post(
@@ -144,8 +168,6 @@ async def create_emergency_appointment(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
-    if current_user.role.lower() == "branch_manager" and current_user.branch_id:
-        payload.branch_id = current_user.branch_id
     _check_action_scope(payload.branch_id, payload.doctor_id, current_user)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         for table, column, value in (
@@ -299,8 +321,6 @@ async def create_appointment(
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     """Schedule and record a new clinic appointment."""
-    if current_user.role.lower() == "branch_manager" and current_user.branch_id:
-        payload.branch_id = current_user.branch_id
     _check_action_scope(payload.branch_id, payload.doctor_id, current_user)
     async with database_mutation(conn), conn.cursor() as cur:
         # Validate patient
@@ -543,6 +563,4 @@ async def delete_consultation_note(
         await _get_note_row(conn, note_id, current_user, lock=True)
         await cur.execute("DELETE FROM consultation_note WHERE note_id = %s;", (note_id,))
     return None
-
-
 

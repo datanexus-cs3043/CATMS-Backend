@@ -27,16 +27,14 @@ async def connect_to_database() -> None:
         return
 
     conninfo = settings.db_conninfo
-    if not conninfo or "ep-xyz.neon.tech" in conninfo:
-        logger.warning(
-            "[Database] Placeholder DATABASE_URL detected ('ep-xyz.neon.tech'). "
-            "Set your real Neon PostgreSQL connection string in .env to enable database operations."
-        )
+    if not conninfo:
+        logger.warning("[Database] No database connection string provided. Database features will be disabled.")
         return
 
+    pool: Optional[AsyncConnectionPool] = None
     try:
         logger.info("[Database] Initializing PostgreSQL psycopg3 connection pool...")
-        db_pool = AsyncConnectionPool(
+        pool = AsyncConnectionPool(
             conninfo=conninfo,
             min_size=settings.DB_POOL_MIN_SIZE,
             max_size=settings.DB_POOL_MAX_SIZE,
@@ -47,19 +45,25 @@ async def connect_to_database() -> None:
             },
             open=False,
         )
-        await db_pool.open()
-        
+        await pool.open()
+
         # Test the connection pool immediately
-        async with db_pool.connection() as conn:
+        async with pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("SELECT current_database(), version();")
                 result = await cur.fetchone()
                 db_name = result["current_database"] if result else "unknown"
                 logger.info(f"[Database] Successfully connected to PostgreSQL database '{db_name}'!")
-    except Exception as e:
-        logger.error(f"[Database] Failed to connect to PostgreSQL database: {e}")
+        db_pool = pool
+    except Exception:
+        logger.exception("[Database] Failed to connect to PostgreSQL database")
+        if pool is not None:
+            try:
+                await pool.close()
+            except Exception:
+                logger.exception("[Database] Failed to close the unsuccessful connection pool")
         db_pool = None
-        raise e
+        raise
 
 
 async def close_database_connection() -> None:
@@ -89,7 +93,7 @@ async def get_db() -> AsyncGenerator[AsyncConnection, None]:
     if db_pool is None:
         raise HTTPException(
             status_code=503,
-            detail="Database connection pool is not initialized. Please configure a valid DATABASE_URL in .env.",
+            detail="Database service is unavailable.",
         )
 
     async with db_pool.connection() as connection:

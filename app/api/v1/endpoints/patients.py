@@ -106,8 +106,6 @@ async def create_patient(
     current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "receptionist_cashier")),
 ):
     """Register a new patient into the system."""
-    if current_user.role.lower() == "branch_manager" and current_user.branch_id:
-        payload.branch_id = current_user.branch_id
     check_branch_scope(payload.branch_id, current_user)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))

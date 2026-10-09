@@ -30,8 +30,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}...")
     try:
         await connect_to_database()
-    except Exception as e:
-        logger.warning(f"[Database] Could not connect to database on startup: {e}")
+    except Exception:
+        logger.warning("[Database] Startup is continuing without a database connection.")
     yield
     logger.info(f"Shutting down {settings.PROJECT_NAME}...")
     await close_database_connection()

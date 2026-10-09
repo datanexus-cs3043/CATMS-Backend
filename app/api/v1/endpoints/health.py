@@ -1,8 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from psycopg import AsyncConnection
+from fastapi import APIRouter, Response, status
 import logging
 
-from app.core.database import get_db
+from app.core import database
 from app.schemas.health import HealthResponse
 
 logger = logging.getLogger("medsync.api.health")
@@ -15,21 +14,21 @@ router = APIRouter()
     summary="Health check and database connectivity verification",
     description="Verifies the operational status of the FastAPI backend and confirms live connectivity with the PostgreSQL database using psycopg3.",
 )
-async def check_health():
-    from app.core.database import db_pool
-    if db_pool is None:
+async def check_health(response: Response):
+    if database.db_pool is None:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return HealthResponse(
-            status="healthy",
+            status="unhealthy",
             database="disconnected",
             detected_tables_count=0,
-            details={"message": "FastAPI is running. Set a valid DATABASE_URL in .env to connect to PostgreSQL."},
+            details={"message": "The API is running, but the database is unavailable."},
         )
     try:
-        async with db_pool.connection() as conn:
+        async with database.db_pool.connection() as conn:
             async with conn.cursor() as cur:
                 # Check basic connection, database name, version, and server time
                 await cur.execute("""
-                    SELECT 
+                    SELECT
                         current_database() AS db_name,
                         version() AS db_version,
                         NOW()::text AS server_time;
@@ -38,8 +37,8 @@ async def check_health():
 
                 # Query count of base tables in the public schema
                 await cur.execute("""
-                    SELECT COUNT(*) AS table_count 
-                    FROM information_schema.tables 
+                    SELECT COUNT(*) AS table_count
+                    FROM information_schema.tables
                     WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
                 """)
                 table_info = await cur.fetchone()
@@ -53,11 +52,11 @@ async def check_health():
                     server_time=db_info["server_time"] if db_info else None,
                     detected_tables_count=table_count,
                 )
-    except Exception as e:
-        logger.error(f"Health check database query failed: {e}")
+    except Exception:
+        logger.exception("Health check database query failed")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return HealthResponse(
-            status="healthy",
+            status="unhealthy",
             database="disconnected",
-            details={"error": str(e)},
+            details={"message": "The database connectivity check failed."},
         )
-

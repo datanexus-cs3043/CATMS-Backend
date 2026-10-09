@@ -81,10 +81,12 @@ async def list_payments(
 
     branch_id = None
     doctor_id = None
-    if current_user.role.lower() == "branch_manager":
+    if current_user.role.lower() in ("branch_manager", "receptionist_cashier"):
         check_branch_scope(current_user.branch_id, current_user)
         branch_id = current_user.branch_id
     elif current_user.role.lower() == "doctor":
+        if current_user.doctor_id is None:
+            raise HTTPException(403, "A linked doctor profile is required.")
         doctor_id = current_user.doctor_id
 
     async with conn.cursor(row_factory=dict_row) as cur:
