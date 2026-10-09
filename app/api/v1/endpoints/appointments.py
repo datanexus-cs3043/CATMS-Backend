@@ -49,9 +49,10 @@ async def _get_appointment_row(conn: AsyncConnection, appointment_id: int) -> di
     return appointment
 
 
-@router.post(
+@router.api_route(
     "/{appointment_id}/complete",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    methods=["POST", "PUT"],
+    response_model=AppointmentResponse,
     summary="Complete appointment",
 )
 async def complete_appointment(
@@ -61,15 +62,19 @@ async def complete_appointment(
 ):
     appointment = await _get_appointment_row(conn, appointment_id)
     _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Appointment completion requires a persisted appointment status field.",
-    )
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "UPDATE appointment SET status = 'Completed' WHERE appointment_id = %s RETURNING *;",
+            (appointment_id,),
+        )
+        row = await cur.fetchone()
+        return AppointmentResponse(**row)
 
 
-@router.post(
+@router.api_route(
     "/{appointment_id}/cancel",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    methods=["POST", "PUT"],
+    response_model=AppointmentResponse,
     summary="Cancel appointment",
 )
 async def cancel_appointment(
@@ -79,10 +84,13 @@ async def cancel_appointment(
 ):
     appointment = await _get_appointment_row(conn, appointment_id)
     _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Appointment cancellation requires a persisted appointment status field.",
-    )
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "UPDATE appointment SET status = 'Cancelled' WHERE appointment_id = %s RETURNING *;",
+            (appointment_id,),
+        )
+        row = await cur.fetchone()
+        return AppointmentResponse(**row)
 
 
 @router.post(
@@ -136,6 +144,8 @@ async def create_emergency_appointment(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
+    if current_user.role.lower() == "branch_manager" and current_user.branch_id:
+        payload.branch_id = current_user.branch_id
     _check_action_scope(payload.branch_id, payload.doctor_id, current_user)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         for table, column, value in (
@@ -289,6 +299,8 @@ async def create_appointment(
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     """Schedule and record a new clinic appointment."""
+    if current_user.role.lower() == "branch_manager" and current_user.branch_id:
+        payload.branch_id = current_user.branch_id
     _check_action_scope(payload.branch_id, payload.doctor_id, current_user)
     async with database_mutation(conn), conn.cursor() as cur:
         # Validate patient

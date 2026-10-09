@@ -10,6 +10,7 @@ if sys.platform == "win32":
 from psycopg_pool import AsyncConnectionPool
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from fastapi import HTTPException
 
 from app.core.config import settings
 
@@ -26,8 +27,11 @@ async def connect_to_database() -> None:
         return
 
     conninfo = settings.db_conninfo
-    if not conninfo:
-        logger.warning("[Database] No database connection string provided. Database features will be disabled.")
+    if not conninfo or "ep-xyz.neon.tech" in conninfo:
+        logger.warning(
+            "[Database] Placeholder DATABASE_URL detected ('ep-xyz.neon.tech'). "
+            "Set your real Neon PostgreSQL connection string in .env to enable database operations."
+        )
         return
 
     try:
@@ -83,7 +87,10 @@ async def get_db() -> AsyncGenerator[AsyncConnection, None]:
         await connect_to_database()
 
     if db_pool is None:
-        raise RuntimeError("Database connection pool is not initialized. Check your database configuration.")
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection pool is not initialized. Please configure a valid DATABASE_URL in .env.",
+        )
 
     async with db_pool.connection() as connection:
         yield connection

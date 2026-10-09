@@ -42,7 +42,7 @@ def _authorize_payment_resource(
             raise HTTPException(403, "Doctors can only access their own compensation.")
 
 
-async def _payment_query(cur, payment_id=None, invoice_id=None, doctor_id=None) -> None:
+async def _payment_query(cur, payment_id=None, invoice_id=None, doctor_id=None, branch_id=None) -> None:
     query = """SELECT dp.doctor_payment_id AS payment_id, dp.doctor_id,
                       dp.appointment_id, dp.invoice_item_id, dp.date, dp.time,
                       dp.doctor_payment AS amount
@@ -56,6 +56,9 @@ async def _payment_query(cur, payment_id=None, invoice_id=None, doctor_id=None) 
     elif invoice_id is not None:
         query += " WHERE i.invoice_id = %s"
         params.append(invoice_id)
+    if branch_id is not None:
+        query += " AND a.branch_id = %s" if params else " WHERE a.branch_id = %s"
+        params.append(branch_id)
     if doctor_id is not None:
         query += " AND dp.doctor_id = %s" if params else " WHERE dp.doctor_id = %s"
         params.append(doctor_id)
@@ -64,6 +67,29 @@ async def _payment_query(cur, payment_id=None, invoice_id=None, doctor_id=None) 
         query += " FOR UPDATE OF dp"
     query += ";"
     await cur.execute(query, tuple(params))
+
+
+@router.get("/payments", response_model=List[PaymentResponse])
+@router.get("/doctor-payments", response_model=List[PaymentResponse])
+async def list_payments(
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
+):
+    """List payment records scoped by staff branch or doctor."""
+    if current_user.user_type != "staff" or current_user.role.lower() not in STAFF_ROLES:
+        raise HTTPException(403, "Staff credentials required.")
+
+    branch_id = None
+    doctor_id = None
+    if current_user.role.lower() == "branch_manager":
+        check_branch_scope(current_user.branch_id, current_user)
+        branch_id = current_user.branch_id
+    elif current_user.role.lower() == "doctor":
+        doctor_id = current_user.doctor_id
+
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await _payment_query(cur, branch_id=branch_id, doctor_id=doctor_id)
+        return [PaymentResponse(**row) for row in await cur.fetchall()]
 
 
 @router.get("/invoices/{invoice_id}/payments", response_model=List[PaymentResponse])

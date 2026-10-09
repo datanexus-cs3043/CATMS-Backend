@@ -99,6 +99,7 @@ class AppointmentUpdate(BaseModel):
 
 class AppointmentResponse(AppointmentBase):
     appointment_id: int
+    status: Optional[str] = "Scheduled"
 
     model_config = ConfigDict(from_attributes=True)
 
