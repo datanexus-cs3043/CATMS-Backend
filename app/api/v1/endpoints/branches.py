@@ -35,8 +35,9 @@ async def _get_branch(conn: AsyncConnection, branch_id: int) -> dict:
 @router.get("", response_model=List[BranchResponse], summary="List branches")
 async def list_branches(
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(require_role("admin", "branch_manager")),
+    current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "receptionist_cashier")),
 ):
+    # Non-admin staff only see their own branch (front desk needs it for booking/registration forms).
     async with conn.cursor(row_factory=dict_row) as cur:
         if current_user.role.lower() == "admin":
             await cur.execute("SELECT * FROM branch ORDER BY branch_name ASC;")
