@@ -23,3 +23,6 @@ ENV/
 # Testing & logs
 *.log
 .pytest_cache/
+
+# Personal design-change log (kept local)
+docs/DESIGN_CHANGES.md
