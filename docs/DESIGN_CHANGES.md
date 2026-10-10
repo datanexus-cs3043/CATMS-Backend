@@ -61,3 +61,13 @@ file in `database/migrations/`. That migration file must be run once in Neon.
   doctor could not open a patient registered at another branch.
 - **Change:** doctors may see any patient they have an appointment with.
 - **Neon:** no change.
+
+### 7. Invoice built from the recorded treatments (database)
+- **Problem:** creating an invoice only inserted an empty header, so the bill had
+  no lines and a total of 0. The brief says invoices come from completed treatments.
+- **Change:** new procedure `sp_generate_invoice(appointment, staff)` in
+  `07_procedures.sql`. In one transaction it checks the visit is Completed, not
+  already billed, has treatments, and the staff member works at that branch; then
+  it creates the invoice and copies every treatment into `invoice_item`. Existing
+  triggers set the total, balance and status.
+- **Neon:** run `database/migrations/20261010_generate_invoice.sql` once.
