@@ -139,6 +139,13 @@ async def create_patient(
             ),
         )
         new_patient = await cur.fetchone()
+        if payload.emergency_contact is not None:
+            contact = payload.emergency_contact
+            await cur.execute(
+                """INSERT INTO emergency_contact (patient_id, contact_name, relationship, phone)
+                   VALUES (%s, %s, %s, %s);""",
+                (new_patient["patient_id"], contact.contact_name, contact.relationship, contact.phone),
+            )
         return PatientResponse(**new_patient)
 
 

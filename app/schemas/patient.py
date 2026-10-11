@@ -10,7 +10,16 @@ class EmergencyContactBase(BaseModel):
 
 
 class EmergencyContactCreate(EmergencyContactBase):
-    pass
+    contact_name: str = Field(min_length=1, max_length=150)
+    relationship: str = Field(min_length=1, max_length=100)
+    phone: str = Field(min_length=1, max_length=50)
+
+    @field_validator("contact_name", "relationship", "phone")
+    @classmethod
+    def trim_required_contact_fields(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Contact fields cannot be blank")
+        return value.strip()
 
 
 class EmergencyContactUpdate(BaseModel):
@@ -46,7 +55,7 @@ class PatientBase(BaseModel):
 
 
 class PatientCreate(PatientBase):
-    pass
+    emergency_contact: Optional[EmergencyContactCreate] = None
 
 
 class PatientUpdate(BaseModel):
