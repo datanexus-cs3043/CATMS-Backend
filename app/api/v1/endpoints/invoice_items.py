@@ -35,10 +35,21 @@ async def _get_item(cur, invoice_id: int, item_id: int) -> dict:
     return item
 
 
-async def _validate_treatment(cur, treatment_id: int) -> None:
-    await cur.execute("SELECT treatment_id FROM treatment WHERE treatment_id = %s;", (treatment_id,))
-    if not await cur.fetchone():
-        raise HTTPException(422, f"Treatment {treatment_id} not found")
+async def _reject_issued_item_change(
+    cur, invoice_id: int, current_user: JWTPayload, *, item_id: int | None = None
+) -> None:
+    # Every persisted invoice is issued: both creation routes generate its items
+    # from the completed visit. Unpaid is a payment state, not an editable draft.
+    # Keep the invoice lock and scope checks used by other financial mutations.
+    invoice = await _get_invoice(cur, invoice_id)
+    _authorize_invoice(invoice, current_user, write=True)
+    if item_id is not None:
+        await _get_item(cur, invoice_id, item_id)
+    raise HTTPException(
+        status.HTTP_409_CONFLICT,
+        "Issued invoice items cannot be changed. Record treatments before generating "
+        "the invoice; billing corrections require an explicitly authorized adjustment workflow.",
+    )
 
 
 @router.get("/{invoice_id}/items", response_model=List[InvoiceItemResponse])
@@ -72,19 +83,7 @@ async def create_invoice_item(
     current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
 ):
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
-        invoice = await _get_invoice(cur, invoice_id)
-        _authorize_invoice(invoice, current_user, write=True)
-        await _validate_treatment(cur, payload.treatment_id)
-        await cur.execute(
-            """INSERT INTO invoice_item
-               (invoice_id, treatment_id, quantity, unitprice, description)
-               VALUES (%s, %s, %s, %s, %s) RETURNING invoice_item_id;""",
-            (invoice_id, payload.treatment_id, payload.quantity,
-             payload.unitprice, payload.description),
-        )
-        item_id = (await cur.fetchone())["invoice_item_id"]
-        item = await _get_item(cur, invoice_id, item_id)
-    return InvoiceItemResponse(**item)
+        await _reject_issued_item_change(cur, invoice_id, current_user)
 
 
 @router.put(
@@ -99,24 +98,10 @@ async def update_invoice_item(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
 ):
-    update_data = payload.model_dump(exclude_unset=True)
-    if not update_data:
+    if not payload.model_dump(exclude_unset=True):
         raise HTTPException(400, "No update fields provided")
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
-        invoice = await _get_invoice(cur, invoice_id)
-        _authorize_invoice(invoice, current_user, write=True)
-        await _get_item(cur, invoice_id, item_id)
-        if "treatment_id" in update_data:
-            await _validate_treatment(cur, update_data["treatment_id"])
-        clauses = [f"{key} = %s" for key in update_data]
-        values = list(update_data.values()) + [invoice_id, item_id]
-        await cur.execute(
-            f"UPDATE invoice_item SET {', '.join(clauses)} "
-            "WHERE invoice_id = %s AND invoice_item_id = %s;",
-            tuple(values),
-        )
-        item = await _get_item(cur, invoice_id, item_id)
-    return InvoiceItemResponse(**item)
+        await _reject_issued_item_change(cur, invoice_id, current_user, item_id=item_id)
 
 
 @router.delete(
@@ -131,11 +116,4 @@ async def delete_invoice_item(
     current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
 ):
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
-        invoice = await _get_invoice(cur, invoice_id)
-        _authorize_invoice(invoice, current_user, write=True)
-        await _get_item(cur, invoice_id, item_id)
-        await cur.execute(
-            "DELETE FROM invoice_item WHERE invoice_id = %s AND invoice_item_id = %s;",
-            (invoice_id, item_id),
-        )
-    return None
+        await _reject_issued_item_change(cur, invoice_id, current_user, item_id=item_id)
