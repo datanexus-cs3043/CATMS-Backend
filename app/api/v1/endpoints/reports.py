@@ -103,20 +103,21 @@ async def doctor_revenue(
 
 @router.get("/outstanding-balances", response_model=List[OutstandingBalanceResponse])
 async def outstanding_balances(
+    branch_id: Optional[int] = Query(None, gt=0, description="Admin only"),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
-    scope, params = _report_scope(current_user, "a.branch_id")
-    scope = f"{scope} AND i.balance > 0" if scope else " WHERE i.balance > 0"
+    """Report 3: patients with outstanding balances (unpaid invoice totals per patient)."""
+    where, params = _filters(current_user, "v.branch_id", "v.invoice_date", branch_id, None, None)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"""SELECT i.invoice_id, a.patient_id,
-                       p.first_name || ' ' || p.last_name AS patient_name,
-                       i.invoice_date, i.balance, i.status
-                FROM invoice i
-                JOIN appointment a ON a.appointment_id = i.appointment_id
-                JOIN patient p ON p.patient_id = a.patient_id{scope}
-                ORDER BY i.balance DESC, i.invoice_date ASC;""",
+            f"""SELECT v.patient_id, v.patient_name, p.contact_details,
+                       SUM(v.balance) AS total_outstanding, COUNT(*) AS invoice_count,
+                       MIN(v.invoice_date) AS oldest_invoice_date
+                FROM v_outstanding_balances v
+                JOIN patient p ON p.patient_id = v.patient_id{where}
+                GROUP BY v.patient_id, v.patient_name, p.contact_details
+                ORDER BY total_outstanding DESC, v.patient_name;""",
             params,
         )
         return [OutstandingBalanceResponse(**row) for row in await cur.fetchall()]
