@@ -227,7 +227,18 @@ async def list_appointments(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     """List appointments with optional filtering by doctor, patient, branch, or date."""
-    query = "SELECT * FROM appointment WHERE 1=1"
+    query = """
+        SELECT
+            a.*,
+            p.first_name || ' ' || p.last_name AS patient_name,
+            d.doctor_name,
+            b.branch_name
+        FROM appointment a
+        JOIN patient p ON a.patient_id = p.patient_id
+        JOIN doctor d ON a.doctor_id = d.doctor_id
+        JOIN branch b ON a.branch_id = b.branch_id
+        WHERE 1=1
+    """
     params = []
 
     if current_user.user_type == "staff":
