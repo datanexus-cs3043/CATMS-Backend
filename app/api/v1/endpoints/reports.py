@@ -123,29 +123,28 @@ async def outstanding_balances(
         return [OutstandingBalanceResponse(**row) for row in await cur.fetchall()]
 
 
-@router.get(
-    "/treatments-by-category",
-    response_model=List[TreatmentCategoryReportResponse],
-)
+@router.get("/treatments-by-category", response_model=List[TreatmentCategoryReportResponse])
 async def treatments_by_category(
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    branch_id: Optional[int] = Query(None, gt=0, description="Admin only"),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
-    scope, params = _report_scope(current_user, "a.branch_id")
+    """Report 4: treatments given on completed visits per category over a period (visit date)."""
+    where, params = _filters(current_user, "a.branch_id", "a.appointment_date", branch_id, from_date, to_date)
+    where = (where + " AND" if where else " WHERE") + " a.status = 'Completed'"
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"""SELECT tc.category_id, tc.category_name,
-                       COUNT(DISTINCT t.treatment_id) AS treatment_count,
-                       COALESCE(SUM(ii.quantity), 0) AS usage_count,
-                       COALESCE(SUM(ii.quantity * ii.unitprice), 0) AS treatment_revenue
-                FROM treatment_category tc
-                JOIN treatment t ON t.category_id = tc.category_id
-                LEFT JOIN invoice_item ii ON ii.treatment_id = t.treatment_id
-                LEFT JOIN invoice i ON i.invoice_id = ii.invoice_id
-                LEFT JOIN appointment a ON a.appointment_id = i.appointment_id
-                {scope}
-                GROUP BY tc.category_id, tc.category_name
-                ORDER BY treatment_revenue DESC, tc.category_name ASC;""",
+            f"""SELECT tc.category_id, tc.category_name, t.treatment_id, t.treatment_name,
+                       SUM(at.quantity) AS count,
+                       SUM(at.quantity * at.unitprice) AS total_revenue
+                FROM appointment_treatment at
+                JOIN appointment a ON a.appointment_id = at.appointment_id
+                JOIN treatment t ON t.treatment_id = at.treatment_id
+                JOIN treatment_category tc ON tc.category_id = t.category_id{where}
+                GROUP BY tc.category_id, tc.category_name, t.treatment_id, t.treatment_name
+                ORDER BY tc.category_name, count DESC, t.treatment_name;""",
             params,
         )
         return [TreatmentCategoryReportResponse(**row) for row in await cur.fetchall()]

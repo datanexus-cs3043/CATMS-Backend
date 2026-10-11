@@ -40,11 +40,13 @@ class OutstandingBalanceResponse(BaseModel):
 
 
 class TreatmentCategoryReportResponse(BaseModel):
+    """Report 4: how many times each treatment (grouped by category) was given."""
     category_id: int
     category_name: str
-    treatment_count: int
-    usage_count: int
-    treatment_revenue: Decimal
+    treatment_id: int
+    treatment_name: str
+    count: int
+    total_revenue: Decimal
 
 
 class InsuranceComparisonResponse(BaseModel):
