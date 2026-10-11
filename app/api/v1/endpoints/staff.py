@@ -5,6 +5,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
 from app.auth.dependencies import require_csrf, require_role
+from app.auth.security import get_password_hash
 from app.auth.schemas import JWTPayload
 from app.auth.service import normalize_role
 from app.api.v1.endpoints._guards import check_branch_scope, database_mutation
@@ -12,6 +13,7 @@ from app.core.database import get_db
 from app.schemas.staff import StaffCreate, StaffResponse, StaffUpdate
 
 STAFF_ROLES = ("admin", "branch_manager", "doctor", "receptionist_cashier")
+DEFAULT_STAFF_PASSWORD = "password123"
 router = APIRouter(prefix="/staff", tags=["Staff"])
 
 
@@ -97,14 +99,40 @@ async def create_staff(
         if not await cur.fetchone():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Branch does not exist")
         await cur.execute(
+            'SELECT user_id FROM "user" WHERE LOWER(username) = LOWER(%s);',
+            (payload.username,),
+        )
+        if await cur.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Username '{payload.username}' is already in use.",
+            )
+        await cur.execute(
+            '''INSERT INTO "user"
+               (first_name, last_name, contact_details, email, username, password)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               RETURNING user_id;''',
+            (payload.first_name, payload.last_name, payload.contact_details,
+             str(payload.email), payload.username, get_password_hash(DEFAULT_STAFF_PASSWORD)),
+        )
+        user_id = (await cur.fetchone())["user_id"]
+        await cur.execute(
+            """INSERT INTO users_logins (user_id, user_name)
+               VALUES (%s, %s)
+               RETURNING users_logins_id;""",
+            (user_id, payload.username),
+        )
+        users_logins_id = (await cur.fetchone())["users_logins_id"]
+        await cur.execute(
             """INSERT INTO staff (branch_id, users_logins_id, first_name, last_name,
                contact_details, email, staff_type, role)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *;""",
-            (payload.branch_id, payload.users_logins_id, payload.first_name,
+            (payload.branch_id, users_logins_id, payload.first_name,
              payload.last_name, payload.contact_details, str(payload.email),
              payload.staff_type, payload.role),
         )
-        return StaffResponse(**await cur.fetchone())
+        staff = await cur.fetchone()
+        return StaffResponse(**staff, username=payload.username)
 
 
 @router.put(
