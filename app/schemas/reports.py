@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -30,20 +30,23 @@ class DoctorRevenueResponse(BaseModel):
 
 
 class OutstandingBalanceResponse(BaseModel):
-    invoice_id: int
+    """Report 3: one row per patient who still owes money."""
     patient_id: int
     patient_name: str
-    invoice_date: date
-    balance: Decimal
-    status: str
+    contact_details: Optional[str] = None
+    total_outstanding: Decimal
+    invoice_count: int
+    oldest_invoice_date: date
 
 
 class TreatmentCategoryReportResponse(BaseModel):
+    """Report 4: how many times each treatment (grouped by category) was given."""
     category_id: int
     category_name: str
-    treatment_count: int
-    usage_count: int
-    treatment_revenue: Decimal
+    treatment_id: int
+    treatment_name: str
+    count: int
+    total_revenue: Decimal
 
 
 class InsuranceComparisonResponse(BaseModel):
