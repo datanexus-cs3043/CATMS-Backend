@@ -74,27 +74,28 @@ async def appointments_summary(
 
 @router.get("/doctor-revenue", response_model=List[DoctorRevenueResponse])
 async def doctor_revenue(
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    branch_id: Optional[int] = Query(None, gt=0, description="Admin only"),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
-    scope, params = _report_scope(current_user, "a.branch_id")
+    """Report 2: doctor-wise revenue (billed and collected) for invoices dated in the period."""
+    where, params = _filters(current_user, "s.branch_id", "i.invoice_date", branch_id, from_date, to_date)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"""SELECT d.doctor_id, d.doctor_name,
-                       COUNT(DISTINCT a.appointment_id) AS appointment_count,
-                       COUNT(DISTINCT i.invoice_id) AS invoice_count,
-                       COALESCE(SUM(inv.billed_amount), 0) AS billed_revenue,
-                       COALESCE(SUM(inv.collected_amount), 0) AS collected_revenue
-                FROM doctor d
-                JOIN appointment a ON a.doctor_id = d.doctor_id
-                LEFT JOIN invoice i ON i.appointment_id = a.appointment_id
-                LEFT JOIN (
-                    SELECT invoice_id, amount_paid + balance AS billed_amount,
-                           amount_paid AS collected_amount
-                    FROM invoice
-                ) inv ON inv.invoice_id = i.invoice_id{scope}
-                GROUP BY d.doctor_id, d.doctor_name
-                ORDER BY collected_revenue DESC, d.doctor_name ASC;""",
+            f"""SELECT d.doctor_id, d.doctor_name, b.branch_name,
+                       COUNT(DISTINCT i.appointment_id) AS appointment_count,
+                       SUM(i.amount_paid + i.balance) AS total_revenue,
+                       SUM(i.amount_paid) AS collected,
+                       ROUND(SUM(i.amount_paid + i.balance) / COUNT(DISTINCT i.appointment_id), 2) AS avg_revenue
+                FROM invoice i
+                JOIN appointment a ON a.appointment_id = i.appointment_id
+                JOIN doctor d ON d.doctor_id = a.doctor_id
+                JOIN staff s ON s.staff_id = d.staff_id
+                JOIN branch b ON b.branch_id = s.branch_id{where}
+                GROUP BY d.doctor_id, d.doctor_name, b.branch_name
+                ORDER BY total_revenue DESC, d.doctor_name;""",
             params,
         )
         return [DoctorRevenueResponse(**row) for row in await cur.fetchall()]

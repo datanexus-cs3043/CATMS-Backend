@@ -17,12 +17,14 @@ class BranchDailySummaryResponse(BaseModel):
 
 
 class DoctorRevenueResponse(BaseModel):
+    """Report 2: revenue per doctor from invoices in the period."""
     doctor_id: int
     doctor_name: str
+    branch_name: str
     appointment_count: int
-    invoice_count: int
-    billed_revenue: Decimal
-    collected_revenue: Decimal
+    total_revenue: Decimal
+    collected: Decimal
+    avg_revenue: Decimal
 
     model_config = ConfigDict(from_attributes=True)
 
