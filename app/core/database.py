@@ -1,14 +1,15 @@
 import sys
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, Any, List, Dict
 
 # On Windows, psycopg async requires WindowsSelectorEventLoopPolicy
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from psycopg_pool import AsyncConnectionPool
-from psycopg import AsyncConnection
+from psycopg_pool import AsyncConnectionPool, PoolClosed, PoolTimeout, TooManyRequests
+from psycopg import AsyncConnection, OperationalError
 from psycopg.rows import dict_row
 from fastapi import HTTPException
 
@@ -18,13 +19,28 @@ logger = logging.getLogger("medsync.database")
 
 # Global async connection pool instance for psycopg3
 db_pool: Optional[AsyncConnectionPool] = None
+_initialization_task: Optional[asyncio.Task[None]] = None
 
 
 async def connect_to_database() -> None:
-    """Initializes the psycopg3 AsyncConnectionPool on FastAPI startup."""
-    global db_pool
+    """Share one pool initialization between startup and concurrent requests."""
+    global _initialization_task
     if db_pool is not None:
         return
+    # No await between checking and publishing the task: one task per event loop.
+    if _initialization_task is None:
+        _initialization_task = asyncio.create_task(_initialize_database_pool())
+    task = _initialization_task
+    try:
+        # A cancelled request must not cancel initialization for other requests.
+        await asyncio.shield(task)
+    finally:
+        if task.done() and _initialization_task is task:
+            _initialization_task = None
+
+
+async def _initialize_database_pool() -> None:
+    global db_pool
 
     conninfo = settings.db_conninfo
     if not conninfo:
@@ -57,23 +73,53 @@ async def connect_to_database() -> None:
         db_pool = pool
     except Exception:
         logger.exception("[Database] Failed to connect to PostgreSQL database")
-        if pool is not None:
+        raise
+    finally:
+        # Also clean up when startup is cancelled before the pool is published.
+        if pool is not None and db_pool is not pool:
             try:
                 await pool.close()
             except Exception:
                 logger.exception("[Database] Failed to close the unsuccessful connection pool")
-        db_pool = None
-        raise
 
 
 async def close_database_connection() -> None:
     """Closes the psycopg3 AsyncConnectionPool on FastAPI shutdown."""
-    global db_pool
-    if db_pool:
+    global db_pool, _initialization_task
+    task = _initialization_task
+    if task is not None:
+        try:
+            await asyncio.shield(task)
+        except Exception:
+            # Initialization already logs the failure and closes its failed pool.
+            pass
+        finally:
+            if task.done() and _initialization_task is task:
+                _initialization_task = None
+    pool = db_pool
+    db_pool = None
+    if pool is not None:
         logger.info("[Database] Closing PostgreSQL psycopg3 connection pool...")
-        await db_pool.close()
-        db_pool = None
+        await pool.close()
         logger.info("[Database] Connection pool closed.")
+
+
+@asynccontextmanager
+async def _database_connection():
+    if db_pool is None:
+        try:
+            await connect_to_database()
+        except OperationalError as exc:
+            raise HTTPException(503, "Database service is unavailable.") from exc
+    pool = db_pool
+    if pool is None:
+        raise HTTPException(503, "Database service is unavailable.")
+    try:
+        async with pool.connection() as connection:
+            yield connection
+    except (PoolTimeout, PoolClosed, TooManyRequests) as exc:
+        logger.warning("[Database] Connection acquisition unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Database service is unavailable.") from exc
 
 
 async def get_db() -> AsyncGenerator[AsyncConnection, None]:
@@ -86,28 +132,13 @@ async def get_db() -> AsyncGenerator[AsyncConnection, None]:
                 await cur.execute("SELECT * FROM treatment;")
                 return await cur.fetchall()
     """
-    global db_pool
-    if db_pool is None:
-        await connect_to_database()
-
-    if db_pool is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Database service is unavailable.",
-        )
-
-    async with db_pool.connection() as connection:
+    async with _database_connection() as connection:
         yield connection
 
 
 async def fetch_one(query: str, params: Optional[tuple | dict] = None) -> Optional[Dict[str, Any]]:
     """Helper utility to execute a direct SQL query and fetch a single record."""
-    global db_pool
-    if db_pool is None:
-        await connect_to_database()
-    if db_pool is None:
-        raise RuntimeError("Database connection pool is not initialized.")
-    async with db_pool.connection() as conn:
+    async with _database_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(query, params)
             return await cur.fetchone()
@@ -115,12 +146,7 @@ async def fetch_one(query: str, params: Optional[tuple | dict] = None) -> Option
 
 async def fetch_all(query: str, params: Optional[tuple | dict] = None) -> List[Dict[str, Any]]:
     """Helper utility to execute a direct SQL query and fetch all matching records."""
-    global db_pool
-    if db_pool is None:
-        await connect_to_database()
-    if db_pool is None:
-        raise RuntimeError("Database connection pool is not initialized.")
-    async with db_pool.connection() as conn:
+    async with _database_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(query, params)
             return await cur.fetchall()
