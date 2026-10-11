@@ -22,18 +22,27 @@ class UserUpdate(BaseModel):
     last_name: Optional[str] = Field(None, max_length=100)
     email: Optional[str] = Field(None, max_length=255)
     contact_details: Optional[str] = Field(None, max_length=255)
-    password: Optional[str] = Field(None, min_length=6, description="Optional new password to update")
 
-    @field_validator("first_name", "last_name", "email", "password", mode="before")
+    @field_validator("first_name", "last_name", "email", mode="before")
     @classmethod
     def validate_provided_required_fields(cls, value, info):
         if value is None:
             raise ValueError(f"{info.field_name} cannot be null")
-        if isinstance(value, str) and info.field_name != "password":
+        if isinstance(value, str):
             value = value.strip()
             if not value:
                 raise ValueError(f"{info.field_name} cannot be blank")
         return value
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=6)
+
+
+class PasswordResetResponse(BaseModel):
+    user_id: int
+    message: str
 
 
 class UserResponse(BaseModel):
