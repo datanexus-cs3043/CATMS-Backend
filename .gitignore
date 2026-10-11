@@ -23,5 +23,5 @@ ENV/
 # Testing & logs
 *.log
 .pytest_cache/
+*.txt
 
-backend_endpoints_auth_report.txt
