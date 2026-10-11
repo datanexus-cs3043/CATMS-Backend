@@ -158,6 +158,8 @@ CREATE TABLE appointment (
     start_time TIME NOT NULL,
     end_time TIME NOT NULL,
     appointment_type VARCHAR(100) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'Scheduled'
+        CHECK (status IN ('Scheduled', 'Completed', 'Cancelled')),
     created_by VARCHAR(150) NOT NULL,
     original_appointment_id INTEGER REFERENCES appointment(appointment_id),
     treatment_id INTEGER REFERENCES treatment(treatment_id)
