@@ -30,7 +30,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
     "/login",
     response_model=LoginResponse,
     summary="User Login",
-    description="Authenticates staff or patient users, creates a JWT, and sets an HttpOnly session cookie.",
+    description="Authenticates staff or patient users by username or account email, creates a JWT, and sets an HttpOnly session cookie.",
 )
 async def login(
     credentials: LoginRequest,
@@ -46,7 +46,7 @@ async def login(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password"
+            detail="Incorrect username/email or password"
         )
 
     # Prepare JWT claims (no passwords, hashes, or medical data)
