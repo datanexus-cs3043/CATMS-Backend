@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     appointment_treatments,
     invoices,
     payments,
+    patient_payments,
     insurance_providers,
     insurance_policies,
     insurance_coverage,
@@ -38,6 +39,7 @@ api_router.include_router(treatments.router)
 api_router.include_router(appointment_treatments.router)
 api_router.include_router(invoices.router)
 api_router.include_router(payments.router)
+api_router.include_router(patient_payments.router)
 api_router.include_router(insurance_providers.router)
 api_router.include_router(insurance_policies.router)
 api_router.include_router(insurance_coverage.router)
