@@ -7,12 +7,20 @@ from psycopg.rows import dict_row
 from app.core.database import get_db
 from app.auth.dependencies import get_current_user, require_role, require_csrf
 from app.auth.schemas import JWTPayload
-from app.auth.security import get_password_hash
-from app.schemas.user import UserCreate, UserUpdate, UserResponse, LoginHistoryResponse
+from app.auth.security import get_password_hash, verify_password
+from app.schemas.user import (
+    UserCreate,
+    UserUpdate,
+    UserResponse,
+    LoginHistoryResponse,
+    PasswordChangeRequest,
+    PasswordResetResponse,
+)
 from app.api.v1.endpoints._guards import database_mutation
 
 logger = logging.getLogger("medsync.api.users")
 router = APIRouter()
+DEFAULT_RESET_PASSWORD = "password123"
 
 
 # ==========================================
@@ -154,7 +162,7 @@ async def create_user(
     "/{user_id}",
     response_model=UserResponse,
     summary="Update user details",
-    description="Updates user profile fields and optionally password. Accessible by Admin or the account owner.",
+    description="Updates user profile fields. Accessible by Admin or the account owner.",
     dependencies=[Depends(require_csrf)],
 )
 async def update_user(
@@ -218,11 +226,6 @@ async def update_user(
             update_fields.append("email = %s")
             params.append(user_in.email.strip())
 
-        if user_in.password is not None:
-            hashed_pwd = get_password_hash(user_in.password)
-            update_fields.append("password = %s")
-            params.append(hashed_pwd)
-
         if not update_fields:
             # Nothing to update, return current record
             await cur.execute(
@@ -247,8 +250,93 @@ async def update_user(
         return updated_user
 
 
+@router.post(
+    "/change-password",
+    response_model=PasswordResetResponse,
+    summary="Change own password",
+    description="Changes the authenticated account owner's password after verifying the current password.",
+    dependencies=[Depends(require_csrf)],
+)
+async def change_password(
+    password_in: PasswordChangeRequest,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(get_current_user),
+):
+    if password_in.current_password == password_in.new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The new password must be different from the current password.",
+        )
+
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            'SELECT password FROM "user" WHERE user_id = %s;',
+            (current_user.user_id,),
+        )
+        user = await cur.fetchone()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User account not found.",
+            )
+
+        if not verify_password(password_in.current_password, user["password"]):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The current password is incorrect.",
+            )
+
+        await cur.execute(
+            """
+            UPDATE "user"
+            SET password = %s
+            WHERE user_id = %s;
+            """,
+            (get_password_hash(password_in.new_password), current_user.user_id),
+        )
+
+    return PasswordResetResponse(
+        user_id=current_user.user_id,
+        message="Password changed successfully.",
+    )
+
+
+@router.post(
+    "/{user_id}/reset-password",
+    response_model=PasswordResetResponse,
+    summary="Reset a user's password",
+    description="Resets any user's password to the system default. Accessible by Admin only.",
+    dependencies=[Depends(require_csrf), Depends(require_role("admin"))],
+)
+async def reset_password(
+    user_id: int,
+    conn: AsyncConnection = Depends(get_db),
+):
+    async with database_mutation(conn), conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE "user"
+            SET password = %s
+            WHERE user_id = %s
+            RETURNING user_id;
+            """,
+            (get_password_hash(DEFAULT_RESET_PASSWORD), user_id),
+        )
+        reset_user = await cur.fetchone()
+        if not reset_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with ID {user_id} not found.",
+            )
+
+    return PasswordResetResponse(
+        user_id=user_id,
+        message="Password reset successfully to the default password.",
+    )
+
+
 # ==========================================
-# 5. Delete User (Admin Only)
+# 6. Delete User (Admin Only)
 # ==========================================
 @router.delete(
     "/{user_id}",
@@ -286,7 +374,7 @@ async def delete_user(
 
 
 # ==========================================
-# 6. Get User Login History (Admin or Self)
+# 7. Get User Login History (Admin or Self)
 # ==========================================
 @router.get(
     "/{user_id}/login-history",

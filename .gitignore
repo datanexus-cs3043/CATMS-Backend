@@ -24,5 +24,7 @@ ENV/
 *.log
 .pytest_cache/
 
+*.txt
+
 # Personal design-change log (kept local)
 docs/DESIGN_CHANGES.md
