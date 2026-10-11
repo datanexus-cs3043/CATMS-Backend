@@ -2,16 +2,19 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from starlette.concurrency import run_in_threadpool
 
 from app.core.database import get_db
 from app.auth.dependencies import get_current_user, verify_patient_ownership, require_csrf, require_role
 from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
 from app.auth.schemas import JWTPayload
+from app.auth.security import get_password_hash
 from app.schemas.appointment import AppointmentDetailResponse
 from app.schemas.patient import (
     PatientCreate,
     PatientUpdate,
     PatientResponse,
+    PatientRegistrationResponse,
     PatientDetailResponse,
     EmergencyContactCreate,
     EmergencyContactUpdate,
@@ -100,15 +103,18 @@ async def get_patient(
         return PatientDetailResponse(**patient_data)
 
 
-@router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED,
+@router.post("", response_model=PatientRegistrationResponse, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(require_csrf)])
 async def create_patient(
     payload: PatientCreate,
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "receptionist_cashier")),
 ):
-    """Register a new patient into the system."""
+    """Register a patient, optional linked portal account, and contact atomically."""
     check_branch_scope(payload.branch_id, current_user)
+    # Hash off the event loop and before taking the short account-write lock.
+    password_hash = (await run_in_threadpool(get_password_hash, "password123")
+                     if payload.portal_username is not None else None)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))
         if not await cur.fetchone():
@@ -117,11 +123,33 @@ async def create_patient(
                 detail=f"Branch with id {payload.branch_id} does not exist",
             )
 
+        user_id = None
+        if payload.portal_username is not None:
+            # The legacy schema has no case-insensitive email uniqueness constraint.
+            # Serialize this check/insert against all other account writers, including
+            # staff registration, without changing existing accounts or schema.
+            await cur.execute('LOCK TABLE "user" IN SHARE ROW EXCLUSIVE MODE;')
+            await cur.execute(
+                '''SELECT user_id FROM "user"
+                   WHERE LOWER(username) IN (LOWER(%s), LOWER(%s))
+                      OR LOWER(email) IN (LOWER(%s), LOWER(%s)) LIMIT 1;''',
+                (payload.portal_username, payload.email, payload.portal_username, payload.email),
+            )
+            if await cur.fetchone():
+                raise HTTPException(409, "That username or account email is already in use. Choose unique sign-in details.")
+            await cur.execute(
+                '''INSERT INTO "user" (first_name, last_name, contact_details, email, username, password)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING user_id;''',
+                (payload.first_name, payload.last_name, payload.contact_details,
+                 payload.email, payload.portal_username, password_hash),
+            )
+            user_id = (await cur.fetchone())["user_id"]
+
         insert_query = """
             INSERT INTO patient (
                 branch_id, first_name, last_name, date_of_birth, gender,
-                patient_type, contact_details, email, address
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                patient_type, contact_details, email, address, user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *;
         """
         await cur.execute(
@@ -136,6 +164,7 @@ async def create_patient(
                 payload.contact_details,
                 payload.email,
                 payload.address,
+                user_id,
             ),
         )
         new_patient = await cur.fetchone()
@@ -146,7 +175,7 @@ async def create_patient(
                    VALUES (%s, %s, %s, %s);""",
                 (new_patient["patient_id"], contact.contact_name, contact.relationship, contact.phone),
             )
-        return PatientResponse(**new_patient)
+        return PatientRegistrationResponse(**new_patient, portal_username=payload.portal_username)
 
 
 @router.put("/{patient_id}", response_model=PatientResponse, dependencies=[Depends(require_csrf)])

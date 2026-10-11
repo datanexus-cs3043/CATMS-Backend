@@ -1,6 +1,6 @@
 from datetime import date
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class EmergencyContactBase(BaseModel):
@@ -55,7 +55,30 @@ class PatientBase(BaseModel):
 
 
 class PatientCreate(PatientBase):
+    branch_id: int = Field(gt=0)
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    portal_username: Optional[str] = Field(None, min_length=3, max_length=100)
     emergency_contact: Optional[EmergencyContactCreate] = None
+
+    @field_validator("first_name", "last_name", "portal_username", mode="before")
+    @classmethod
+    def trim_registration_fields(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_portal_email(self):
+        if self.portal_username is not None:
+            if not self.email:
+                raise ValueError("An account email is required for portal access")
+            email = self.email.strip()
+            local, separator, domain = email.rpartition("@")
+            if (len(email) > 255 or not separator or not local or "@" in local
+                    or "." not in domain or domain.startswith(".") or domain.endswith(".")
+                    or any(character.isspace() for character in email)):
+                raise ValueError("Enter a valid account email for portal access")
+            self.email = email
+        return self
 
 
 class PatientUpdate(BaseModel):
@@ -79,6 +102,10 @@ class PatientResponse(PatientBase):
 class PatientDetailResponse(PatientResponse):
     branch_name: Optional[str] = None
     emergency_contacts: List[EmergencyContactResponse] = []
+
+
+class PatientRegistrationResponse(PatientResponse):
+    portal_username: Optional[str] = None
 
 
 class PatientInvoiceResponse(BaseModel):
