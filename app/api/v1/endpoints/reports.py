@@ -33,6 +33,10 @@ def _report_scope(current_user: JWTPayload, column: str) -> tuple[str, list[int]
 def _filters(current_user: JWTPayload, branch_col: str, date_col: str, branch_id: Optional[int],
              from_date: Optional[date], to_date: Optional[date]) -> tuple[str, list]:
     """WHERE clause for branch scope (managers: own branch only) and an optional date range."""
+    if from_date is not None and to_date is not None and from_date > to_date:
+        raise HTTPException(422, "From date must not be after to date.")
+    if current_user.role.lower() != "admin" and branch_id is not None and branch_id != current_user.branch_id:
+        raise HTTPException(403, "Reports are restricted to your assigned branch.")
     scope, params = _report_scope(current_user, branch_col)
     conditions = [scope.removeprefix(" WHERE ")] if scope else []
     if not scope and branch_id is not None:
@@ -81,7 +85,7 @@ async def doctor_revenue(
     current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
     """Report 2: doctor-wise revenue (billed and collected) for invoices dated in the period."""
-    where, params = _filters(current_user, "s.branch_id", "i.invoice_date", branch_id, from_date, to_date)
+    where, params = _filters(current_user, "a.branch_id", "i.invoice_date", branch_id, from_date, to_date)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             f"""SELECT d.doctor_id, d.doctor_name, b.branch_name,
@@ -92,8 +96,7 @@ async def doctor_revenue(
                 FROM invoice i
                 JOIN appointment a ON a.appointment_id = i.appointment_id
                 JOIN doctor d ON d.doctor_id = a.doctor_id
-                JOIN staff s ON s.staff_id = d.staff_id
-                JOIN branch b ON b.branch_id = s.branch_id{where}
+                JOIN branch b ON b.branch_id = a.branch_id{where}
                 GROUP BY d.doctor_id, d.doctor_name, b.branch_name
                 ORDER BY total_revenue DESC, d.doctor_name;""",
             params,
@@ -103,12 +106,14 @@ async def doctor_revenue(
 
 @router.get("/outstanding-balances", response_model=List[OutstandingBalanceResponse])
 async def outstanding_balances(
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
     branch_id: Optional[int] = Query(None, gt=0, description="Admin only"),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
     """Report 3: patients with outstanding balances (unpaid invoice totals per patient)."""
-    where, params = _filters(current_user, "v.branch_id", "v.invoice_date", branch_id, None, None)
+    where, params = _filters(current_user, "v.branch_id", "v.invoice_date", branch_id, from_date, to_date)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             f"""SELECT v.patient_id, v.patient_name, p.contact_details,
@@ -155,11 +160,14 @@ async def treatments_by_category(
     response_model=InsuranceComparisonResponse,
 )
 async def insurance_vs_out_of_pocket(
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    branch_id: Optional[int] = Query(None, gt=0, description="Admin only"),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*REPORT_ROLES)),
 ):
     """Compare declared invoice payments and claim approvals, not insurer cash receipts."""
-    scope, params = _report_scope(current_user, "a.branch_id")
+    scope, params = _filters(current_user, "a.branch_id", "i.invoice_date", branch_id, from_date, to_date)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             f"""WITH scoped_invoices AS (
@@ -171,6 +179,7 @@ async def insurance_vs_out_of_pocket(
                     SELECT c.invoice_id, SUM(c.approved_amount) AS approved_amount
                     FROM insurance_claim c
                     JOIN scoped_invoices si ON si.invoice_id = c.invoice_id
+                    WHERE c.status = 'Approved'
                     GROUP BY c.invoice_id
                 )
                 SELECT COALESCE(SUM(si.amount_paid + si.balance), 0) AS invoiced_amount,
