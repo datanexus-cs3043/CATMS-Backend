@@ -263,7 +263,7 @@ async def list_appointments(
     query += " ORDER BY appointment_date DESC, start_time DESC LIMIT %s OFFSET %s;"
     params.extend([limit, skip])
 
-    async with conn.cursor() as cur:
+    async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(query, tuple(params))
         rows = await cur.fetchall()
         return [AppointmentResponse(**row) for row in rows]
@@ -563,4 +563,3 @@ async def delete_consultation_note(
         await _get_note_row(conn, note_id, current_user, lock=True)
         await cur.execute("DELETE FROM consultation_note WHERE note_id = %s;", (note_id,))
     return None
-
