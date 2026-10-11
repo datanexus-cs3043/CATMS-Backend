@@ -1,3 +1,4 @@
+from decimal import Decimal, ROUND_FLOOR
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -16,6 +17,42 @@ from app.schemas.insurance_claim import (
 
 router = APIRouter(prefix="/insurance/claims", tags=["Insurance Claims"])
 CLAIM_WRITE_ROLES = ("admin", "branch_manager", "receptionist_cashier")
+
+
+def _coverage_limit(items: list[dict], coverages: list[dict]) -> Decimal:
+    """MedSync assumption: treatment caps apply once per policy/invoice (visit).
+
+    Use frozen invoice prices, not today's catalogue prices. Repeated treatment
+    lines are aggregated before percentage/cap and rounded down to cents once.
+    Missing rules, zero percentages and zero maximums provide no coverage.
+    This is not an annual benefit limit or a promise of insurer reimbursement.
+    Ambiguous or invalid coverage rules fail closed rather than increasing cover.
+    """
+    rules = {}
+    for coverage in coverages:
+        treatment_id = coverage["treatment_id"]
+        if treatment_id in rules:
+            raise HTTPException(409, "Duplicate treatment coverage rules must be resolved before filing a claim.")
+        rules[treatment_id] = coverage
+
+    eligible = Decimal("0.00")
+    for item in items:
+        minimum_price = Decimal(str(item["minimum_unitprice"]))
+        treatment_total = Decimal(str(item["billed_amount"]))
+        if (item["minimum_quantity"] <= 0 or not minimum_price.is_finite()
+                or not treatment_total.is_finite() or minimum_price < 0 or treatment_total < 0):
+            raise HTTPException(409, "Invalid invoice item values must be resolved before filing a claim.")
+        rule = rules.get(item["treatment_id"])
+        if rule is None:
+            continue
+        percentage = Decimal(str(rule["coverage_percentage"]))
+        maximum = Decimal(str(rule["maximum_amount"]))
+        if (not percentage.is_finite() or not maximum.is_finite()
+                or not Decimal("0") <= percentage <= Decimal("100") or maximum < 0):
+            raise HTTPException(409, "Invalid treatment coverage rules must be resolved before filing a claim.")
+        covered = min(treatment_total * percentage / Decimal("100"), maximum)
+        eligible += covered.quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+    return eligible
 
 
 async def _get_claim(cur, claim_id: int, *, lock: bool = False) -> dict:
@@ -54,7 +91,7 @@ def _authorize_claim(claim: dict, current_user: JWTPayload, *, write: bool = Fal
         raise HTTPException(403, "Doctors can only access claims for their own appointments.")
 
 
-async def _validate_references(cur, invoice_id: int, policy_id: int) -> dict:
+async def _validate_references(cur, invoice_id: int, policy_id: int, *, rejecting: bool = False) -> dict:
     await cur.execute(
         """SELECT i.invoice_id, i.invoice_date, i.amount_paid, i.balance, a.patient_id, a.branch_id
            FROM invoice i
@@ -75,9 +112,15 @@ async def _validate_references(cur, invoice_id: int, policy_id: int) -> dict:
         raise HTTPException(422, f"Insurance policy {policy_id} not found")
     if policy["patient_id"] != invoice["patient_id"]:
         raise HTTPException(422, "The insurance policy must belong to the invoice patient.")
-    if (policy["status"] != "Active"
+    if not rejecting and (policy["status"] != "Active"
             or not policy["start_date"] <= invoice["invoice_date"] <= policy["end_date"]):
         raise HTTPException(422, "The insurance policy must be active on the invoice date.")
+    invoice["policy_id"] = policy_id
+    if rejecting:
+        # Denial releases a reservation. Changed/inactive terms or a legacy
+        # overclaim must not prevent staff recording that outcome. Ownership
+        # and branch authorization still apply, and approved_amount must be zero.
+        return invoice
     # A separate statement after acquiring the invoice lock sees any item changes
     # that committed while this transaction waited for that lock (READ COMMITTED).
     await cur.execute(
@@ -86,6 +129,22 @@ async def _validate_references(cur, invoice_id: int, policy_id: int) -> dict:
         (invoice["amount_paid"] + invoice["balance"], invoice_id),
     )
     invoice["billed_amount"] = (await cur.fetchone())["billed_amount"]
+    await cur.execute(
+        """SELECT treatment_id, SUM(quantity * unitprice) AS billed_amount,
+                  MIN(quantity) AS minimum_quantity, MIN(unitprice) AS minimum_unitprice
+           FROM invoice_item WHERE invoice_id = %s GROUP BY treatment_id;""",
+        (invoice_id,),
+    )
+    items = await cur.fetchall()
+    # The policy and existing coverage rows stay stable until this claim commits.
+    # FOR SHARE also coordinates with the coverage endpoint's row update locks.
+    await cur.execute(
+        """SELECT coverage_id, treatment_id, coverage_percentage, maximum_amount
+           FROM insurance_coverage WHERE policy_id = %s
+           ORDER BY coverage_id FOR SHARE;""",
+        (policy_id,),
+    )
+    invoice["eligible_amount"] = _coverage_limit(items, await cur.fetchall())
     return invoice
 
 
@@ -99,20 +158,33 @@ def _validate_amounts(claim_amount, approved_amount, claim_status) -> None:
 async def _validate_claim_total(cur, invoice, claim_amount, approved_amount, claim_status, claim_id=None):
     """Serialize claims on the invoice; approval is not a patient receipt.
 
-    This is only a billed-amount ceiling, not a coverage percentage/cap calculation.
     Rejected claims reserve nothing; approved claims reserve the approved amount.
+    The per-policy visit budget is separate from the invoice-wide billed ceiling.
+    No automatic approval, patient receipt or balance adjustment occurs here.
     """
+    if claim_status == "Rejected":
+        return
     if claim_amount > invoice["billed_amount"]:
         raise HTTPException(422, "claim_amount cannot exceed the billed invoice amount.")
+    # A partial approval preserves the original request but reserves only the
+    # approved portion. Legacy excessive requests can also be rejected above.
+    requested = claim_amount if claim_status == "Pending" else approved_amount
+    if invoice["eligible_amount"] <= 0 or requested > invoice["eligible_amount"]:
+        raise HTTPException(422, "The pending claim or approved amount cannot exceed this policy's eligible treatment coverage for the invoice/visit.")
     await cur.execute(
         """SELECT COALESCE(SUM(CASE WHEN status = 'Pending' THEN claim_amount
-                                   WHEN status = 'Approved' THEN approved_amount ELSE 0 END), 0) AS reserved
+                                   WHEN status = 'Approved' THEN approved_amount ELSE 0 END), 0) AS reserved,
+                  COALESCE(SUM(CASE WHEN policy_id = %s THEN
+                                   CASE WHEN status = 'Pending' THEN claim_amount
+                                        WHEN status = 'Approved' THEN approved_amount ELSE 0 END
+                                   ELSE 0 END), 0) AS policy_reserved
            FROM insurance_claim WHERE invoice_id = %s AND (%s::integer IS NULL OR claim_id <> %s);""",
-        (invoice["invoice_id"], claim_id, claim_id),
+        (invoice["policy_id"], invoice["invoice_id"], claim_id, claim_id),
     )
-    reserved = (await cur.fetchone())["reserved"]
-    requested = claim_amount if claim_status == "Pending" else approved_amount
-    if reserved + requested > invoice["billed_amount"]:
+    totals = await cur.fetchone()
+    if totals["policy_reserved"] + requested > invoice["eligible_amount"]:
+        raise HTTPException(409, "Pending and approved claims for this policy exceed its eligible coverage for the invoice/visit.")
+    if totals["reserved"] + requested > invoice["billed_amount"]:
         raise HTTPException(409, "Pending and approved claims together cannot exceed the billed invoice amount.")
 
 
@@ -179,7 +251,9 @@ async def create_insurance_claim(
 ):
     _validate_amounts(payload.claim_amount, payload.approved_amount, payload.status)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
-        invoice = await _validate_references(cur, payload.invoice_id, payload.policy_id)
+        invoice = await _validate_references(
+            cur, payload.invoice_id, payload.policy_id, rejecting=payload.status == "Rejected"
+        )
         check_branch_scope(invoice["branch_id"], current_user)
         await _validate_claim_total(cur, invoice, payload.claim_amount, payload.approved_amount, payload.status)
         await cur.execute(
@@ -216,7 +290,9 @@ async def update_insurance_claim(
             raise HTTPException(409, "A filed claim cannot be moved to another invoice or policy.")
         invoice_id = update_data.get("invoice_id", claim["invoice_id"])
         policy_id = update_data.get("policy_id", claim["policy_id"])
-        invoice = await _validate_references(cur, invoice_id, policy_id)
+        invoice = await _validate_references(
+            cur, invoice_id, policy_id, rejecting=update_data.get("status") == "Rejected"
+        )
         check_branch_scope(invoice["branch_id"], current_user)
         claim = await _get_claim(cur, claim_id, lock=True)
         _authorize_claim(claim, current_user, write=True)

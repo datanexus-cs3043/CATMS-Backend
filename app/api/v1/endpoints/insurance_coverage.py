@@ -18,14 +18,14 @@ router = APIRouter(prefix="/insurance/coverage", tags=["Insurance Coverage"])
 COVERAGE_WRITE_ROLES = ("admin", "branch_manager", "receptionist_cashier")
 
 
-async def _get_coverage(cur, coverage_id: int) -> dict:
+async def _get_coverage(cur, coverage_id: int, *, lock: bool = True) -> dict:
     await cur.execute(
         """SELECT c.*, t.treatment_name, p.patient_id, pt.branch_id
            FROM insurance_coverage c
            JOIN insurance_policy p ON p.policy_id = c.policy_id
            JOIN patient pt ON pt.patient_id = p.patient_id
            LEFT JOIN treatment t ON t.treatment_id = c.treatment_id
-           WHERE c.coverage_id = %s FOR UPDATE OF c;""",
+           WHERE c.coverage_id = %s""" + (" FOR UPDATE OF c" if lock else "") + ";",
         (coverage_id,),
     )
     coverage = await cur.fetchone()
@@ -46,17 +46,25 @@ def _authorize_coverage(coverage: dict, current_user: JWTPayload, *, write: bool
     check_branch_scope(coverage["branch_id"], current_user)
 
 
-async def _validate_references(cur, policy_id: int, treatment_id: int) -> dict:
+async def _lock_policy(cur, policy_id: int) -> dict:
+    # Claims take FOR SHARE on the parent policy before reading coverage. Every
+    # coverage mutation must take this exclusive parent lock first, including
+    # inserts, so new rules cannot appear halfway through eligibility checking.
     await cur.execute(
         """SELECT p.policy_id, pt.patient_id, pt.branch_id
            FROM insurance_policy p
            JOIN patient pt ON pt.patient_id = p.patient_id
-           WHERE p.policy_id = %s;""",
+           WHERE p.policy_id = %s FOR UPDATE OF p;""",
         (policy_id,),
     )
     policy = await cur.fetchone()
     if not policy:
         raise HTTPException(422, f"Insurance policy {policy_id} not found")
+    return policy
+
+
+async def _validate_references(cur, policy_id: int, treatment_id: int) -> dict:
+    policy = await _lock_policy(cur, policy_id)
     await cur.execute("SELECT treatment_id FROM treatment WHERE treatment_id = %s;", (treatment_id,))
     if not await cur.fetchone():
         raise HTTPException(422, f"Treatment {treatment_id} not found")
@@ -142,9 +150,18 @@ async def update_insurance_coverage(
     if not update_data:
         raise HTTPException(400, "No update fields provided")
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
-        coverage = await _get_coverage(cur, coverage_id)
+        coverage = await _get_coverage(cur, coverage_id, lock=False)
         _authorize_coverage(coverage, current_user, write=True)
         policy_id = update_data.get("policy_id", coverage["policy_id"])
+        original_policy_id = coverage["policy_id"]
+        # Lock both parents in stable order before the child if a rule is moved.
+        for locked_policy_id in sorted({original_policy_id, policy_id}):
+            policy = await _lock_policy(cur, locked_policy_id)
+            _authorize_coverage(policy, current_user, write=True)
+        coverage = await _get_coverage(cur, coverage_id)
+        _authorize_coverage(coverage, current_user, write=True)
+        if coverage["policy_id"] != original_policy_id:
+            raise HTTPException(409, "The coverage policy changed. Refresh before editing it.")
         treatment_id = update_data.get("treatment_id", coverage["treatment_id"])
         policy = await _validate_references(cur, policy_id, treatment_id)
         check_branch_scope(policy["branch_id"], current_user)
@@ -170,7 +187,13 @@ async def delete_insurance_coverage(
     current_user: JWTPayload = Depends(require_role(*COVERAGE_WRITE_ROLES)),
 ):
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        coverage = await _get_coverage(cur, coverage_id, lock=False)
+        _authorize_coverage(coverage, current_user, write=True)
+        policy = await _lock_policy(cur, coverage["policy_id"])
+        _authorize_coverage(policy, current_user, write=True)
         coverage = await _get_coverage(cur, coverage_id)
         _authorize_coverage(coverage, current_user, write=True)
+        if coverage["policy_id"] != policy["policy_id"]:
+            raise HTTPException(409, "The coverage policy changed. Refresh before deleting it.")
         await cur.execute("DELETE FROM insurance_coverage WHERE coverage_id = %s;", (coverage_id,))
     return None
