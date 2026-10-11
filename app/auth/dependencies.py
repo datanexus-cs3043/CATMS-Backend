@@ -166,26 +166,23 @@ def verify_patient_ownership(target_patient_id: int, current_user: JWTPayload) -
 # 4. CSRF Protection Dependency
 # ==========================================
 
-async def require_csrf(request: Request) -> None:
+async def require_csrf(
+    request: Request,
+    current_user: JWTPayload = Depends(get_current_user),
+) -> None:
     """
     Validates the X-CSRF-Token header on state-changing HTTP requests (POST, PUT, PATCH, DELETE).
     Safe methods (GET, HEAD, OPTIONS) are bypassed.
     """
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         csrf_token = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken")
-        if not csrf_token or not verify_csrf_token(csrf_token):
+        if not verify_csrf_token(csrf_token, expected_user_identifier=str(current_user.user_id)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="CSRF validation failed: Missing or invalid X-CSRF-Token header."
             )
 
 
-async def require_session_csrf(
-    request: Request,
-    current_user: JWTPayload = Depends(get_current_user),
-) -> None:
-    """Require a signed CSRF token belonging to the currently authenticated account."""
-    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-        csrf_token = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken")
-        if not verify_csrf_token(csrf_token, expected_user_identifier=str(current_user.user_id)):
-            raise HTTPException(403, "CSRF validation failed: Token does not match the current account.")
+# Compatibility name for handlers already using the session-bound verifier.
+# Keep one implementation so no write route accidentally accepts a guest/other-account token.
+require_session_csrf = require_csrf
