@@ -84,7 +84,11 @@ class AppointmentBase(BaseModel):
 
 
 class AppointmentCreate(AppointmentBase):
-    pass
+    created_by: Optional[str] = Field(
+        None,
+        deprecated=True,
+        description="Ignored; derived from authenticated user",
+    )
 
 
 class AppointmentUpdate(BaseModel):
