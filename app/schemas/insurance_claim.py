@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -22,18 +22,19 @@ class InsuranceClaimBase(BaseModel):
 
 
 class InsuranceClaimCreate(InsuranceClaimBase):
-    pass
+    claim_amount: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
+    status: Literal["Pending", "Approved", "Rejected"] = "Pending"
 
 
 class InsuranceClaimUpdate(BaseModel):
     invoice_id: Optional[int] = Field(None, gt=0)
     policy_id: Optional[int] = Field(None, gt=0)
     claim_date: Optional[date] = None
-    claim_amount: Optional[Decimal] = Field(None, ge=0, max_digits=10, decimal_places=2)
+    claim_amount: Optional[Decimal] = Field(None, gt=0, max_digits=10, decimal_places=2)
     approved_amount: Optional[Decimal] = Field(
         None, ge=0, max_digits=10, decimal_places=2
     )
-    status: Optional[str] = Field(None, min_length=1, max_length=100)
+    status: Optional[Literal["Pending", "Approved", "Rejected"]] = None
 
     @field_validator("invoice_id", "policy_id", "claim_date", "claim_amount", "approved_amount", "status", mode="before")
     @classmethod
@@ -48,5 +49,6 @@ class InsuranceClaimResponse(InsuranceClaimBase):
     patient_id: Optional[int] = None
     patient_name: Optional[str] = None
     policy_number: Optional[int] = None
+    provider_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
