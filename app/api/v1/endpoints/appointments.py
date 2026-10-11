@@ -109,11 +109,15 @@ async def cancel_appointment(
         if not appointment:
             raise HTTPException(404, f"Appointment {appointment_id} not found")
         _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
+        if appointment.get("status", "Scheduled") != "Scheduled":
+            raise HTTPException(409, "Only scheduled appointments can be cancelled.")
         await cur.execute(
-            "CALL sp_cancel_appointment(%s);",
+            """UPDATE appointment
+               SET status = 'Cancelled'
+               WHERE appointment_id = %s
+               RETURNING *;""",
             (appointment_id,),
         )
-        await cur.execute("SELECT * FROM appointment WHERE appointment_id = %s;", (appointment_id,))
         return AppointmentResponse(**await cur.fetchone())
 
 
