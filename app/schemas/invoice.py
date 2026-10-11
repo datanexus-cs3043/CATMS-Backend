@@ -23,6 +23,11 @@ class InvoiceCreate(InvoiceBase):
     pass
 
 
+class InvoiceGenerate(BaseModel):
+    """Bill a completed appointment from its recorded treatments."""
+    appointment_id: int = Field(gt=0)
+
+
 class InvoiceUpdate(BaseModel):
     staff_id: Optional[int] = Field(None, gt=0)
     invoice_date: Optional[date] = None

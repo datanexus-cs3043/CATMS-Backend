@@ -2,6 +2,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg import AsyncConnection
+from psycopg.errors import CheckViolation, ForeignKeyViolation, UniqueViolation
 from psycopg.rows import dict_row
 
 from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
@@ -10,6 +11,7 @@ from app.auth.schemas import JWTPayload
 from app.core.database import get_db
 from app.schemas.invoice import (
     InvoiceCreate,
+    InvoiceGenerate,
     InvoiceResponse,
     InvoiceUpdate,
 )
@@ -132,6 +134,41 @@ async def create_invoice(
              payload.amount_paid, payload.balance, payload.status),
         )
         invoice_id = (await cur.fetchone())["invoice_id"]
+        invoice = await _get_invoice(cur, invoice_id)
+    return InvoiceResponse(**invoice)
+
+
+@router.post(
+    "/generate",
+    response_model=InvoiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def generate_invoice(
+    payload: InvoiceGenerate,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
+):
+    """Create the invoice and its items for a completed visit (sp_generate_invoice)."""
+    if current_user.staff_id is None:
+        raise HTTPException(403, "A linked staff profile is required to issue invoices.")
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT branch_id FROM appointment WHERE appointment_id = %s;", (payload.appointment_id,)
+        )
+        appointment = await cur.fetchone()
+        if not appointment:
+            raise HTTPException(404, f"Appointment {payload.appointment_id} not found")
+        check_branch_scope(appointment["branch_id"], current_user)
+        try:
+            await cur.execute(
+                "CALL sp_generate_invoice(%s, %s, NULL);",
+                (payload.appointment_id, current_user.staff_id),
+            )
+        except (CheckViolation, UniqueViolation, ForeignKeyViolation) as exc:
+            # Pass the procedure's own message (e.g. "Record at least one treatment...").
+            raise HTTPException(409, exc.diag.message_primary or "Invoice could not be generated.") from exc
+        invoice_id = (await cur.fetchone())["p_invoice_id"]
         invoice = await _get_invoice(cur, invoice_id)
     return InvoiceResponse(**invoice)
 
