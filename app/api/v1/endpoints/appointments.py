@@ -1,5 +1,5 @@
 from datetime import date
-from typing import List, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -227,10 +227,13 @@ async def list_appointments(
     patient_id: Optional[int] = Query(None, description="Filter by patient ID"),
     branch_id: Optional[int] = Query(None, description="Filter by branch ID"),
     appointment_date: Optional[date] = Query(None, description="Filter by appointment date"),
+    appointment_status: Optional[Literal["Scheduled", "Completed", "Cancelled"]] = Query(
+        None, alias="status", description="Filter by appointment status"
+    ),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
-    """List appointments with optional filtering by doctor, patient, branch, or date."""
+    """List appointments with optional doctor, patient, branch, date and status filters."""
     query = """
         SELECT
             a.*,
@@ -260,22 +263,26 @@ async def list_appointments(
         patient_id = current_user.patient_id
 
     if doctor_id is not None:
-        query += " AND doctor_id = %s"
+        query += " AND a.doctor_id = %s"
         params.append(doctor_id)
 
     if patient_id is not None:
-        query += " AND patient_id = %s"
+        query += " AND a.patient_id = %s"
         params.append(patient_id)
 
     if branch_id is not None:
-        query += " AND branch_id = %s"
+        query += " AND a.branch_id = %s"
         params.append(branch_id)
 
     if appointment_date is not None:
-        query += " AND appointment_date = %s"
+        query += " AND a.appointment_date = %s"
         params.append(appointment_date)
 
-    query += " ORDER BY appointment_date DESC, start_time DESC LIMIT %s OFFSET %s;"
+    if appointment_status is not None:
+        query += " AND a.status = %s"
+        params.append(appointment_status)
+
+    query += " ORDER BY a.appointment_date DESC, a.start_time DESC LIMIT %s OFFSET %s;"
     params.extend([limit, skip])
 
     async with conn.cursor(row_factory=dict_row) as cur:
