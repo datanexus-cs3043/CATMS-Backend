@@ -45,8 +45,9 @@ def _authorize_payment_resource(
 async def _payment_query(cur, payment_id=None, invoice_id=None, doctor_id=None, branch_id=None) -> None:
     query = """SELECT dp.doctor_payment_id AS payment_id, dp.doctor_id,
                       dp.appointment_id, dp.invoice_item_id, dp.date, dp.time,
-                      dp.doctor_payment AS amount
+                      dp.doctor_payment AS amount, d.doctor_name
                FROM doctor_payment dp
+               JOIN doctor d ON d.doctor_id = dp.doctor_id
                JOIN appointment a ON a.appointment_id = dp.appointment_id
                JOIN invoice i ON i.appointment_id = a.appointment_id"""
     params = []

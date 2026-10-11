@@ -5,23 +5,26 @@ from typing import List
 from pydantic import BaseModel, ConfigDict
 
 
-class AppointmentTypeSummary(BaseModel):
-    appointment_type: str
-    appointment_count: int
-
-
-class AppointmentSummaryResponse(BaseModel):
-    total_appointments: int
-    appointments_by_type: List[AppointmentTypeSummary]
+class BranchDailySummaryResponse(BaseModel):
+    """Report 1: appointments per branch per day by status."""
+    branch_id: int
+    branch_name: str
+    appointment_date: date
+    scheduled: int
+    completed: int
+    cancelled: int
+    total: int
 
 
 class DoctorRevenueResponse(BaseModel):
+    """Report 2: revenue per doctor from invoices in the period."""
     doctor_id: int
     doctor_name: str
+    branch_name: str
     appointment_count: int
-    invoice_count: int
-    billed_revenue: Decimal
-    collected_revenue: Decimal
+    total_revenue: Decimal
+    collected: Decimal
+    avg_revenue: Decimal
 
     model_config = ConfigDict(from_attributes=True)
 

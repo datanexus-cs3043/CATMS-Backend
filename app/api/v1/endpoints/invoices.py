@@ -1,7 +1,8 @@
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from psycopg import AsyncConnection
+from psycopg.errors import CheckViolation, ForeignKeyViolation, UniqueViolation
 from psycopg.rows import dict_row
 
 from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
@@ -10,6 +11,7 @@ from app.auth.schemas import JWTPayload
 from app.core.database import get_db
 from app.schemas.invoice import (
     InvoiceCreate,
+    InvoiceGenerate,
     InvoiceResponse,
     InvoiceUpdate,
 )
@@ -17,17 +19,23 @@ from app.schemas.invoice import (
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
 INVOICE_WRITE_ROLES = ("admin", "branch_manager", "receptionist_cashier")
 
-
-async def _get_invoice(cur, invoice_id: int) -> dict:
-    await cur.execute(
-        """SELECT i.*, a.patient_id, a.branch_id, a.doctor_id, a.appointment_date,
-                  p.first_name || ' ' || p.last_name AS patient_name,
-                  d.doctor_name
+# Columns every invoice response shares, including totals the pages display.
+_INVOICE_SELECT = """SELECT i.*, a.patient_id, a.branch_id, a.doctor_id, a.appointment_date,
+                  p.first_name || ' ' || p.last_name AS patient_name, d.doctor_name,
+                  (i.amount_paid + i.balance) AS total_amount,
+                  COALESCE((SELECT SUM(c.approved_amount) FROM insurance_claim c
+                            WHERE c.invoice_id = i.invoice_id AND c.status = 'Approved'), 0) AS insurance_covered,
+                  COALESCE((SELECT SUM(c.claim_amount) FROM insurance_claim c
+                            WHERE c.invoice_id = i.invoice_id AND c.status = 'Pending'), 0) AS insurance_pending
            FROM invoice i
            JOIN appointment a ON a.appointment_id = i.appointment_id
            JOIN patient p ON p.patient_id = a.patient_id
-           LEFT JOIN doctor d ON d.doctor_id = a.doctor_id
-           WHERE i.invoice_id = %s FOR UPDATE OF i;""",
+           LEFT JOIN doctor d ON d.doctor_id = a.doctor_id"""
+
+
+async def _get_invoice(cur, invoice_id: int) -> dict:
+    await cur.execute(
+        _INVOICE_SELECT + " WHERE i.invoice_id = %s FOR UPDATE OF i;",
         (invoice_id,),
     )
     invoice = await cur.fetchone()
@@ -53,30 +61,36 @@ def _authorize_invoice(invoice: dict, current_user: JWTPayload, *, write: bool =
 
 @router.get("", response_model=List[InvoiceResponse])
 async def list_invoices(
+    appointment_id: Optional[int] = Query(None, gt=0),
+    patient_id: Optional[int] = Query(None, gt=0),
+    status_filter: Optional[str] = Query(None, alias="status", description="Comma list, e.g. Unpaid,Partially Paid"),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
     async with conn.cursor(row_factory=dict_row) as cur:
-        query = """SELECT i.*, a.patient_id, a.branch_id, a.doctor_id, a.appointment_date,
-                          p.first_name || ' ' || p.last_name AS patient_name,
-                          d.doctor_name
-                   FROM invoice i
-                   JOIN appointment a ON a.appointment_id = i.appointment_id
-                   JOIN patient p ON p.patient_id = a.patient_id
-                   LEFT JOIN doctor d ON d.doctor_id = a.doctor_id"""
+        query = _INVOICE_SELECT + " WHERE TRUE"
         params = []
         if current_user.user_type == "patient":
-            query += " WHERE a.patient_id = %s"
+            query += " AND a.patient_id = %s"
             params.append(current_user.patient_id)
         else:
             if current_user.role.lower() not in STAFF_ROLES:
                 raise HTTPException(403, "Staff credentials required for this resource.")
             if current_user.role.lower() != "admin":
-                query += " WHERE a.branch_id = %s"
+                query += " AND a.branch_id = %s"
                 params.append(current_user.branch_id)
                 if current_user.role.lower() == "doctor":
                     query += " AND a.doctor_id = %s"
                     params.append(current_user.doctor_id)
+        if appointment_id is not None:
+            query += " AND i.appointment_id = %s"
+            params.append(appointment_id)
+        if patient_id is not None:
+            query += " AND a.patient_id = %s"
+            params.append(patient_id)
+        if status_filter:
+            query += " AND i.status = ANY(%s)"
+            params.append([s.strip() for s in status_filter.split(",") if s.strip()])
         query += " ORDER BY i.invoice_date DESC, i.invoice_id DESC;"
         await cur.execute(query, tuple(params))
         return [InvoiceResponse(**row) for row in await cur.fetchall()]
@@ -132,6 +146,41 @@ async def create_invoice(
              payload.amount_paid, payload.balance, payload.status),
         )
         invoice_id = (await cur.fetchone())["invoice_id"]
+        invoice = await _get_invoice(cur, invoice_id)
+    return InvoiceResponse(**invoice)
+
+
+@router.post(
+    "/generate",
+    response_model=InvoiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def generate_invoice(
+    payload: InvoiceGenerate,
+    conn: AsyncConnection = Depends(get_db),
+    current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
+):
+    """Create the invoice and its items for a completed visit (sp_generate_invoice)."""
+    if current_user.staff_id is None:
+        raise HTTPException(403, "A linked staff profile is required to issue invoices.")
+    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT branch_id FROM appointment WHERE appointment_id = %s;", (payload.appointment_id,)
+        )
+        appointment = await cur.fetchone()
+        if not appointment:
+            raise HTTPException(404, f"Appointment {payload.appointment_id} not found")
+        check_branch_scope(appointment["branch_id"], current_user)
+        try:
+            await cur.execute(
+                "CALL sp_generate_invoice(%s, %s, NULL);",
+                (payload.appointment_id, current_user.staff_id),
+            )
+        except (CheckViolation, UniqueViolation, ForeignKeyViolation) as exc:
+            # Pass the procedure's own message (e.g. "Record at least one treatment...").
+            raise HTTPException(409, exc.diag.message_primary or "Invoice could not be generated.") from exc
+        invoice_id = (await cur.fetchone())["p_invoice_id"]
         invoice = await _get_invoice(cur, invoice_id)
     return InvoiceResponse(**invoice)
 
