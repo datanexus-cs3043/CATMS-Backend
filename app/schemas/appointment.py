@@ -99,7 +99,7 @@ class AppointmentUpdate(BaseModel):
 
 class AppointmentResponse(AppointmentBase):
     appointment_id: int
-    status: str
+    status: str = "Scheduled"
 
     model_config = ConfigDict(from_attributes=True)
 
