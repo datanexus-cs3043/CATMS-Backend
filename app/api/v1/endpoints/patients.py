@@ -43,8 +43,10 @@ async def list_patients(
     if current_user.role.lower() == "doctor":
         if current_user.doctor_id is None:
             raise HTTPException(403, "A linked doctor profile is required.")
-        query += " AND EXISTS (SELECT 1 FROM appointment a WHERE a.patient_id = patient.patient_id AND a.doctor_id = %s AND a.branch_id = %s)"
-        params.extend([current_user.doctor_id, current_user.branch_id])
+        query += " AND EXISTS (SELECT 1 FROM appointment a WHERE a.patient_id = patient.patient_id AND a.doctor_id = %s)"
+        params.append(current_user.doctor_id)
+        # A doctor's patients may be registered at any branch (records are shared).
+        branch_id = None
 
     if branch_id is not None:
         query += " AND branch_id = %s"
@@ -277,15 +279,18 @@ async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_
     if not patient:
         raise HTTPException(404, f"Patient {patient_id} not found")
     if current_user.user_type == "staff":
-        check_branch_scope(patient["branch_id"], current_user)
         if current_user.role.lower() == "doctor":
+            # Patient records are shared across branches (brief), so a doctor may open any
+            # patient they have an appointment with, wherever the patient registered.
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT appointment_id FROM appointment WHERE patient_id = %s AND doctor_id = %s AND branch_id = %s LIMIT 1;",
-                    (patient_id, current_user.doctor_id, current_user.branch_id),
+                    "SELECT appointment_id FROM appointment WHERE patient_id = %s AND doctor_id = %s LIMIT 1;",
+                    (patient_id, current_user.doctor_id),
                 )
                 if current_user.doctor_id is None or not await cur.fetchone():
                     raise HTTPException(403, "Doctors can only access patients assigned to their appointments.")
+        else:
+            check_branch_scope(patient["branch_id"], current_user)
 
 
 # =========================================================================
