@@ -2,6 +2,7 @@ import logging
 from typing import Optional, Dict, Any
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from starlette.concurrency import run_in_threadpool
 
 from app.auth.security import verify_password
 from app.auth.schemas import AuthUser, UserType, UserRole
@@ -66,7 +67,7 @@ async def authenticate_user(
 
         # 2. Verify password hash
         stored_hash = user_row.get("password") or ""
-        if not verify_password(plain_password, stored_hash):
+        if not await run_in_threadpool(verify_password, plain_password, stored_hash):
             logger.info("Authentication failed: Incorrect password.")
             return None
 
@@ -105,7 +106,7 @@ async def authenticate_user(
                 user_type=UserType.STAFF.value,
                 role=resolved_role,
                 username=user_name,
-                email=staff_row.get("email") or email,
+                email=email,
                 first_name=staff_row.get("first_name") or user_row.get("first_name"),
                 last_name=staff_row.get("last_name") or user_row.get("last_name"),
                 staff_id=staff_row["staff_id"],
@@ -204,7 +205,7 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
                 user_type=UserType.STAFF.value,
                 role=resolved_role,
                 username=user_row.get("username"),
-                email=staff_row.get("email") or email,
+                email=email,
                 first_name=staff_row.get("first_name") or user_row.get("first_name"),
                 last_name=staff_row.get("last_name") or user_row.get("last_name"),
                 staff_id=staff_row["staff_id"],

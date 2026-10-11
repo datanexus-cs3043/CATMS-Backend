@@ -3,6 +3,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from starlette.concurrency import run_in_threadpool
 
 from app.auth.dependencies import require_csrf, require_role
 from app.auth.security import get_password_hash
@@ -94,18 +95,27 @@ async def create_staff(
 ):
     _check_manager_branch(payload.branch_id, current_user)
     _check_staff_management(payload.model_dump(), current_user)
+    # Argon2 is CPU/memory intensive. Keep it off the event loop and outside
+    # the account-write lock shared with patient portal registration.
+    password_hash = await run_in_threadpool(get_password_hash, DEFAULT_STAFF_PASSWORD)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))
         if not await cur.fetchone():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Branch does not exist")
+        # Login matches either identifier, case-insensitively. The legacy
+        # schema cannot enforce that across both columns, so serialize the
+        # check/insert against other account writers without rewriting data.
+        await cur.execute('LOCK TABLE "user" IN SHARE ROW EXCLUSIVE MODE;')
         await cur.execute(
-            'SELECT user_id FROM "user" WHERE LOWER(username) = LOWER(%s);',
-            (payload.username,),
+            '''SELECT user_id FROM "user"
+               WHERE LOWER(username) IN (LOWER(%s), LOWER(%s))
+                  OR LOWER(email) IN (LOWER(%s), LOWER(%s)) LIMIT 1;''',
+            (payload.username, str(payload.email), payload.username, str(payload.email)),
         )
         if await cur.fetchone():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Username '{payload.username}' is already in use.",
+                detail="That username or account email is already in use. Choose unique sign-in details.",
             )
         await cur.execute(
             '''INSERT INTO "user"
@@ -113,7 +123,7 @@ async def create_staff(
                VALUES (%s, %s, %s, %s, %s, %s)
                RETURNING user_id;''',
             (payload.first_name, payload.last_name, payload.contact_details,
-             str(payload.email), payload.username, get_password_hash(DEFAULT_STAFF_PASSWORD)),
+             str(payload.email), payload.username, password_hash),
         )
         user_id = (await cur.fetchone())["user_id"]
         await cur.execute(
