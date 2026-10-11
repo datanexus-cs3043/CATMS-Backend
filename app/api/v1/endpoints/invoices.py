@@ -33,9 +33,9 @@ _INVOICE_SELECT = """SELECT i.*, a.patient_id, a.branch_id, a.doctor_id, a.appoi
            LEFT JOIN doctor d ON d.doctor_id = a.doctor_id"""
 
 
-async def _get_invoice(cur, invoice_id: int) -> dict:
+async def _get_invoice(cur, invoice_id: int, *, lock: bool = True) -> dict:
     await cur.execute(
-        _INVOICE_SELECT + " WHERE i.invoice_id = %s FOR UPDATE OF i;",
+        _INVOICE_SELECT + " WHERE i.invoice_id = %s" + (" FOR UPDATE OF i" if lock else "") + ";",
         (invoice_id,),
     )
     invoice = await cur.fetchone()
@@ -103,7 +103,7 @@ async def get_invoice(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     async with conn.cursor(row_factory=dict_row) as cur:
-        invoice = await _get_invoice(cur, invoice_id)
+        invoice = await _get_invoice(cur, invoice_id, lock=False)
     _authorize_invoice(invoice, current_user)
     return InvoiceResponse(**invoice)
 
@@ -128,26 +128,13 @@ async def create_invoice(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
 ):
-    async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            "SELECT appointment_id, patient_id, branch_id FROM appointment "
-            "WHERE appointment_id = %s FOR UPDATE;",
-            (payload.appointment_id,),
-        )
-        appointment = await cur.fetchone()
-        if not appointment:
-            raise HTTPException(404, f"Appointment {payload.appointment_id} not found")
-        check_branch_scope(appointment["branch_id"], current_user)
-        await _validate_staff(cur, payload.staff_id, appointment["branch_id"])
-        await cur.execute(
-            "INSERT INTO invoice (appointment_id, staff_id, invoice_date, amount_paid, balance, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING invoice_id;",
-            (payload.appointment_id, payload.staff_id, payload.invoice_date,
-             payload.amount_paid, payload.balance, payload.status),
-        )
-        invoice_id = (await cur.fetchone())["invoice_id"]
-        invoice = await _get_invoice(cur, invoice_id)
-    return InvoiceResponse(**invoice)
+    """Compatibility creation uses the same completed-visit billing as /generate."""
+    if payload.staff_id != current_user.staff_id:
+        raise HTTPException(403, "Issue the invoice using your linked staff profile.")
+    if payload.amount_paid != 0 or payload.balance != 0 or payload.status != "Unpaid":
+        raise HTTPException(409, "Invoice totals are calculated from recorded treatments. "
+                            "Use /invoices/generate, then record payments through the receipt endpoint.")
+    return await _generate_invoice(payload.appointment_id, conn, current_user, invoice_date=payload.invoice_date)
 
 
 @router.post(
@@ -162,25 +149,34 @@ async def generate_invoice(
     current_user: JWTPayload = Depends(require_role(*INVOICE_WRITE_ROLES)),
 ):
     """Create the invoice and its items for a completed visit (sp_generate_invoice)."""
+    return await _generate_invoice(payload.appointment_id, conn, current_user)
+
+
+async def _generate_invoice(appointment_id, conn, current_user, *, invoice_date=None):
     if current_user.staff_id is None:
         raise HTTPException(403, "A linked staff profile is required to issue invoices.")
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT branch_id FROM appointment WHERE appointment_id = %s;", (payload.appointment_id,)
+            "SELECT branch_id, status FROM appointment WHERE appointment_id = %s FOR UPDATE;", (appointment_id,)
         )
         appointment = await cur.fetchone()
         if not appointment:
-            raise HTTPException(404, f"Appointment {payload.appointment_id} not found")
+            raise HTTPException(404, f"Appointment {appointment_id} not found")
         check_branch_scope(appointment["branch_id"], current_user)
+        if appointment["status"] != "Completed":
+            raise HTTPException(409, "Only completed appointments can be invoiced.")
+        await _validate_staff(cur, current_user.staff_id, appointment["branch_id"])
         try:
             await cur.execute(
                 "CALL sp_generate_invoice(%s, %s, NULL);",
-                (payload.appointment_id, current_user.staff_id),
+                (appointment_id, current_user.staff_id),
             )
         except (CheckViolation, UniqueViolation, ForeignKeyViolation) as exc:
             # Pass the procedure's own message (e.g. "Record at least one treatment...").
             raise HTTPException(409, exc.diag.message_primary or "Invoice could not be generated.") from exc
         invoice_id = (await cur.fetchone())["p_invoice_id"]
+        if invoice_date is not None:
+            await cur.execute("UPDATE invoice SET invoice_date = %s WHERE invoice_id = %s;", (invoice_date, invoice_id))
         invoice = await _get_invoice(cur, invoice_id)
     return InvoiceResponse(**invoice)
 
@@ -202,6 +198,13 @@ async def update_invoice(
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         invoice = await _get_invoice(cur, invoice_id)
         _authorize_invoice(invoice, current_user, write=True)
+        if {"amount_paid", "balance", "status"}.intersection(update_data):
+            raise HTTPException(409, "Invoice totals and status are derived from billed items and payment receipts; "
+                                "they cannot be edited directly.")
+        if "invoice_date" in update_data and update_data["invoice_date"] != invoice["invoice_date"]:
+            await cur.execute("SELECT claim_id FROM insurance_claim WHERE invoice_id = %s LIMIT 1;", (invoice_id,))
+            if await cur.fetchone():
+                raise HTTPException(409, "The invoice date cannot change after an insurance claim is filed.")
         if "staff_id" in update_data:
             await _validate_staff(cur, update_data["staff_id"], invoice["branch_id"])
         clauses = [f"{key} = %s" for key in update_data]
