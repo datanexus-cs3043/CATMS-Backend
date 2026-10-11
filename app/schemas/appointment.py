@@ -104,6 +104,9 @@ class AppointmentUpdate(BaseModel):
 class AppointmentResponse(AppointmentBase):
     appointment_id: int
     status: str = "Scheduled"
+    patient_name: Optional[str] = None
+    doctor_name: Optional[str] = None
+    branch_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
