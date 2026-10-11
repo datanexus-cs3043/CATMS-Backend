@@ -20,7 +20,7 @@ CLAIM_WRITE_ROLES = ("admin", "branch_manager", "receptionist_cashier")
 
 async def _get_claim(cur, claim_id: int, *, lock: bool = False) -> dict:
     await cur.execute(
-        """SELECT c.*, a.patient_id, a.branch_id,
+        """SELECT c.*, a.patient_id, a.branch_id, a.doctor_id,
                   p.patient_id AS policy_patient_id,
                   p.policy_number, ip.provider_name,
                   pt.first_name || ' ' || pt.last_name AS patient_name
@@ -50,6 +50,8 @@ def _authorize_claim(claim: dict, current_user: JWTPayload, *, write: bool = Fal
     if current_user.role.lower() not in STAFF_ROLES:
         raise HTTPException(403, "Staff credentials required for this resource.")
     check_branch_scope(claim["branch_id"], current_user)
+    if current_user.role.lower() == "doctor" and (current_user.doctor_id is None or current_user.doctor_id != claim["doctor_id"]):
+        raise HTTPException(403, "Doctors can only access claims for their own appointments.")
 
 
 async def _validate_references(cur, invoice_id: int, policy_id: int) -> dict:
@@ -120,7 +122,7 @@ async def list_insurance_claims(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     async with conn.cursor(row_factory=dict_row) as cur:
-        query = """SELECT c.*, a.patient_id, a.branch_id,
+        query = """SELECT c.*, a.patient_id, a.branch_id, a.doctor_id,
                           p.patient_id AS policy_patient_id,
                           p.policy_number, ip.provider_name,
                           pt.first_name || ' ' || pt.last_name AS patient_name
@@ -138,8 +140,14 @@ async def list_insurance_claims(
             if current_user.role.lower() not in STAFF_ROLES:
                 raise HTTPException(403, "Staff credentials required for this resource.")
             if current_user.role.lower() != "admin":
+                check_branch_scope(current_user.branch_id, current_user)
                 query += " WHERE a.branch_id = %s"
                 params.append(current_user.branch_id)
+            if current_user.role.lower() == "doctor":
+                if current_user.doctor_id is None:
+                    raise HTTPException(403, "A linked doctor profile is required.")
+                query += " AND a.doctor_id = %s"
+                params.append(current_user.doctor_id)
         query += " ORDER BY c.claim_date DESC, c.claim_id DESC;"
         await cur.execute(query, tuple(params))
         claims = await cur.fetchall()
