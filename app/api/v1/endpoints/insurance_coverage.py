@@ -5,6 +5,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
 from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
+from app.api.v1.endpoints.patients import _check_patient_access
 from app.auth.dependencies import get_current_user, require_csrf, require_role
 from app.auth.schemas import JWTPayload
 from app.core.database import get_db
@@ -84,14 +85,18 @@ async def list_insurance_coverage(
                    LEFT JOIN treatment t ON t.treatment_id = c.treatment_id"""
         params = []
         if current_user.user_type == "patient":
+            if current_user.role.lower() != "patient" or current_user.patient_id is None:
+                raise HTTPException(403, "A linked patient profile is required.")
             query += " WHERE p.patient_id = %s"
             params.append(current_user.patient_id)
         else:
-            if current_user.role.lower() not in STAFF_ROLES:
-                raise HTTPException(403, "Staff credentials required for this resource.")
-            if current_user.role.lower() != "admin":
-                query += " WHERE pt.branch_id = %s"
-                params.append(current_user.branch_id)
+            # Coverage reads follow shared patient access, independently of write scope.
+            check_branch_scope(current_user.branch_id, current_user)
+            if current_user.role.lower() == "doctor":
+                if current_user.doctor_id is None:
+                    raise HTTPException(403, "A linked doctor profile is required.")
+                query += " WHERE EXISTS (SELECT 1 FROM appointment a WHERE a.patient_id = p.patient_id AND a.doctor_id = %s AND a.branch_id = %s)"
+                params.extend([current_user.doctor_id, current_user.branch_id])
         query += " ORDER BY c.coverage_id ASC;"
         await cur.execute(query, tuple(params))
         return [InsuranceCoverageResponse(**row) for row in await cur.fetchall()]
@@ -104,8 +109,8 @@ async def get_insurance_coverage(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     async with conn.cursor(row_factory=dict_row) as cur:
-        coverage = await _get_coverage(cur, coverage_id)
-    _authorize_coverage(coverage, current_user)
+        coverage = await _get_coverage(cur, coverage_id, lock=False)
+    await _check_patient_access(conn, coverage["patient_id"], current_user)
     return InsuranceCoverageResponse(**coverage)
 
 

@@ -32,7 +32,7 @@ async def list_patients(
     skip: int = Query(0, ge=0, description="Offset for pagination"),
     limit: int = Query(50, ge=1, le=100, description="Page size"),
     search: Optional[str] = Query(None, description="Search by patient name or email"),
-    branch_id: Optional[int] = Query(None, description="Filter by branch ID"),
+    branch_id: Optional[int] = Query(None, gt=0, description="Filter by registration branch ID"),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
@@ -40,16 +40,13 @@ async def list_patients(
     query = "SELECT * FROM patient WHERE 1=1"
     params = []
 
-    if current_user.role.lower() != "admin":
-        check_branch_scope(branch_id if branch_id is not None else current_user.branch_id, current_user)
-        branch_id = current_user.branch_id
+    # Registration branch is a directory filter, not a shared-record read boundary.
+    check_branch_scope(current_user.branch_id, current_user)
     if current_user.role.lower() == "doctor":
         if current_user.doctor_id is None:
             raise HTTPException(403, "A linked doctor profile is required.")
-        query += " AND EXISTS (SELECT 1 FROM appointment a WHERE a.patient_id = patient.patient_id AND a.doctor_id = %s)"
-        params.append(current_user.doctor_id)
-        # A doctor's patients may be registered at any branch (records are shared).
-        branch_id = None
+        query += " AND EXISTS (SELECT 1 FROM appointment a WHERE a.patient_id = patient.patient_id AND a.doctor_id = %s AND a.branch_id = %s)"
+        params.extend([current_user.doctor_id, current_user.branch_id])
 
     if branch_id is not None:
         query += " AND branch_id = %s"
@@ -193,6 +190,9 @@ async def update_patient(
             detail="No update fields provided",
         )
 
+    if current_user.user_type == "patient" and set(update_data) - {"contact_details", "email", "address"}:
+        raise HTTPException(403, "Patients can only update their own contact details. Clinic staff manage demographic details.")
+
     if "branch_id" in update_data:
         check_branch_scope(update_data["branch_id"], current_user)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
@@ -307,6 +307,13 @@ async def create_emergency_contact(
 
 
 async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_user: JWTPayload, *, lock: bool = False) -> None:
+    if current_user.user_type == "staff":
+        # Fail closed for unknown roles or non-admin staff without a branch.
+        check_branch_scope(current_user.branch_id, current_user)
+        if lock and current_user.role.lower() == "doctor":
+            raise HTTPException(403, "Clinic administration manages patient and emergency-contact details.")
+    elif current_user.user_type != "patient" or current_user.role.lower() != "patient" or current_user.patient_id is None:
+        raise HTTPException(403, "A linked patient profile or authorized staff account is required.")
     verify_patient_ownership(patient_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
         query = "SELECT branch_id FROM patient WHERE patient_id = %s"
@@ -320,12 +327,14 @@ async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_
             # patient they have an appointment with, wherever the patient registered.
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT appointment_id FROM appointment WHERE patient_id = %s AND doctor_id = %s LIMIT 1;",
-                    (patient_id, current_user.doctor_id),
+                    "SELECT appointment_id FROM appointment WHERE patient_id = %s AND doctor_id = %s AND branch_id = %s LIMIT 1;",
+                    (patient_id, current_user.doctor_id, current_user.branch_id),
                 )
                 if current_user.doctor_id is None or not await cur.fetchone():
                     raise HTTPException(403, "Doctors can only access patients assigned to their appointments.")
-        else:
+        elif lock:
+            # Staff writes retain the registration-branch boundary; shared reads
+            # must also work before the first appointment at the visiting branch.
             check_branch_scope(patient["branch_id"], current_user)
 
 
