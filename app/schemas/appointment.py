@@ -1,5 +1,5 @@
 from datetime import date, time, datetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -139,7 +139,8 @@ class AppointmentUpdate(BaseModel):
 class AppointmentResponse(AppointmentBase):
     appointment_id: int
     invoice_id: Optional[int] = None
-    status: str = "Scheduled"
+    rescheduled_to: Optional[int] = None
+    status: Literal["Scheduled", "Completed", "Cancelled"] = "Scheduled"
     patient_name: Optional[str] = None
     doctor_name: Optional[str] = None
     branch_name: Optional[str] = None
@@ -152,4 +153,4 @@ class AppointmentDetailResponse(AppointmentResponse):
     doctor_name: Optional[str] = None
     branch_name: Optional[str] = None
     treatment_name: Optional[str] = None
-    consultation_notes: List[ConsultationNoteResponse] = []
+    consultation_notes: List[ConsultationNoteResponse] = Field(default_factory=list)

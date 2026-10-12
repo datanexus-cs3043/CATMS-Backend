@@ -26,10 +26,10 @@ _TREATMENT_ROWS = """
 """
 
 
-async def _get_appointment(cur, appointment_id: int) -> dict:
+async def _get_appointment(cur, appointment_id: int, *, lock: bool = True) -> dict:
     await cur.execute(
         """SELECT appointment_id, patient_id, branch_id, doctor_id, treatment_id, status
-           FROM appointment WHERE appointment_id = %s FOR UPDATE;""",
+           FROM appointment WHERE appointment_id = %s""" + (" FOR UPDATE;" if lock else ";"),
         (appointment_id,),
     )
     appointment = await cur.fetchone()
@@ -67,7 +67,7 @@ async def list_appointment_treatments(
     current_user: JWTPayload = Depends(get_current_user),
 ):
     async with conn.cursor(row_factory=dict_row) as cur:
-        appointment = await _get_appointment(cur, appointment_id)
+        appointment = await _get_appointment(cur, appointment_id, lock=False)
         _authorize_appointment(appointment, current_user)
         await cur.execute(
             _TREATMENT_ROWS + " WHERE at.appointment_id = %s ORDER BY at.appointment_treatment_id;",

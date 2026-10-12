@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class AppointmentTreatmentCreate(BaseModel):
     treatment_id: int = Field(gt=0)
-    quantity: int = Field(default=1, gt=0)
+    quantity: int = Field(default=1, gt=0, le=2147483647)
 
 
 class AppointmentTreatmentResponse(BaseModel):

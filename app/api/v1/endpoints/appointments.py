@@ -108,6 +108,17 @@ async def complete_appointment(
         _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
         await _ensure_scheduled(cur, appointment)
         await cur.execute(
+            """SELECT 1 WHERE EXISTS (
+                   SELECT 1 FROM appointment_treatment WHERE appointment_id = %s
+               ) OR EXISTS (
+                   SELECT 1 FROM consultation_note WHERE appointment_id = %s
+               );""",
+            (appointment_id, appointment_id),
+        )
+        evidence = await cur.fetchone()
+        if appointment["treatment_id"] is None and not evidence:
+            raise HTTPException(422, "Record at least one treatment or consultation note before completing the appointment.")
+        await cur.execute(
             "CALL sp_complete_appointment(%s);",
             (appointment_id,),
         )
@@ -273,6 +284,9 @@ async def list_appointments(
         SELECT
             a.*,
             i.invoice_id,
+            (SELECT next.appointment_id FROM appointment next
+             WHERE next.original_appointment_id = a.appointment_id
+             ORDER BY next.appointment_id LIMIT 1) AS rescheduled_to,
             p.first_name || ' ' || p.last_name AS patient_name,
             d.doctor_name,
             b.branch_name
@@ -340,6 +354,9 @@ async def get_appointment(
             SELECT 
                 a.*,
                 i.invoice_id,
+                (SELECT next.appointment_id FROM appointment next
+                 WHERE next.original_appointment_id = a.appointment_id
+                 ORDER BY next.appointment_id LIMIT 1) AS rescheduled_to,
                 p.first_name || ' ' || p.last_name AS patient_name,
                 d.doctor_name,
                 b.branch_name,
@@ -460,7 +477,7 @@ async def update_appointment(
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
-    """Reschedule or update details of an existing appointment."""
+    """Update booking details; time changes use the history-preserving reschedule endpoint."""
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(
@@ -482,6 +499,8 @@ async def update_appointment(
         _check_action_scope(update_data.get("branch_id", appointment["branch_id"]),
                             update_data.get("doctor_id", appointment["doctor_id"]), current_user)
         updated = {**appointment, **update_data}
+        if any(updated[field] != appointment[field] for field in ("appointment_date", "start_time", "end_time")):
+            raise HTTPException(409, "Use the reschedule endpoint to change the time slot and retain appointment history.")
         if appointment["original_appointment_id"] is not None and any(
             updated[field] != appointment[field] for field in ("doctor_id", "branch_id")
         ):
@@ -524,6 +543,18 @@ async def delete_appointment(
         await _ensure_scheduled(cur, appointment)
         if appointment["original_appointment_id"] is not None:
             raise HTTPException(409, "Rescheduling history cannot be deleted; cancel the appointment instead.")
+        await cur.execute(
+            """SELECT 1 WHERE EXISTS (
+                   SELECT 1 FROM consultation_note WHERE appointment_id = %s
+               ) OR EXISTS (
+                   SELECT 1 FROM appointment_treatment WHERE appointment_id = %s
+               ) OR EXISTS (
+                   SELECT 1 FROM appointment WHERE original_appointment_id = %s
+               );""",
+            (appointment_id, appointment_id, appointment_id),
+        )
+        if await cur.fetchone():
+            raise HTTPException(409, "Recorded clinical or rescheduling history cannot be deleted; cancel the appointment instead.")
         await cur.execute("DELETE FROM appointment WHERE appointment_id = %s;", (appointment_id,))
         return None
 
