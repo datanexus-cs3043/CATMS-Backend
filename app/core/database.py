@@ -22,6 +22,11 @@ db_pool: Optional[AsyncConnectionPool] = None
 _initialization_task: Optional[asyncio.Task[None]] = None
 
 
+async def _configure_clinic_timezone(connection: AsyncConnection) -> None:
+    """CURRENT_DATE and local timestamps use the clinic's day, not host UTC."""
+    await connection.execute("SET TIME ZONE 'Asia/Colombo';")
+
+
 async def connect_to_database() -> None:
     """Share one pool initialization between startup and concurrent requests."""
     global _initialization_task
@@ -55,6 +60,7 @@ async def _initialize_database_pool() -> None:
             min_size=settings.DB_POOL_MIN_SIZE,
             max_size=settings.DB_POOL_MAX_SIZE,
             timeout=settings.DB_POOL_TIMEOUT,
+            configure=_configure_clinic_timezone,
             kwargs={
                 "row_factory": dict_row,
                 "autocommit": True,

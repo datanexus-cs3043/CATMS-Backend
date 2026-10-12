@@ -289,6 +289,9 @@ BEGIN
                 INSERT INTO doctor(staff_id,doctor_name,doctor_license_number) VALUES(v_staff,'Dr. '||v_name.first_name||' '||v_name.last_name,'DEMO-SL-'||lpad(i::text,4,'0')) RETURNING doctor_id INTO j;
                 v_doctors:=array_append(v_doctors,j);
                 INSERT INTO doctor_specialty VALUES(j,v_specialties[1+(i-5)%3]);
+                -- Two fictional general physicians also practice family medicine,
+                -- demonstrating the many-to-many specialty requirement.
+                IF i IN (5,8) THEN INSERT INTO doctor_specialty VALUES(j,v_specialties[4]); END IF;
             END IF;
         ELSE
             INSERT INTO patient(branch_id,first_name,last_name,date_of_birth,gender,patient_type,contact_details,email,address,user_id)
@@ -303,9 +306,9 @@ BEGIN
     FOR i IN 1..24 LOOP
         -- Three visits per patient: completed, scheduled and cancelled.
         SELECT s.branch_id INTO v_branch FROM doctor d JOIN staff s USING(staff_id) WHERE d.doctor_id=v_doctors[1+(i-1)%6];
-        UPDATE patient SET branch_id=v_branch WHERE patient_id=v_patients[i];
+        -- Keep the registering branch: patients can attend a different branch.
         FOR j IN 1..2 LOOP
-            INSERT INTO insurance_coverage(policy_id,treatment_id,coverage_percentage,maximum_amount) VALUES(v_policies[i],v_treatments[j],80,10000);
+            INSERT INTO insurance_coverage(policy_id,treatment_id,coverage_percentage,maximum_amount) VALUES(v_policies[i],v_treatments[j],CASE WHEN i%3=1 THEN 100 ELSE 80 END,10000);
         END LOOP;
         v_day:=CURRENT_DATE-1-(i%14);
         INSERT INTO appointment(patient_id,doctor_id,branch_id,appointment_date,start_time,end_time,appointment_type,status,created_by,treatment_id)
@@ -328,7 +331,10 @@ BEGIN
         INSERT INTO doctor_payment(doctor_id,appointment_id,invoice_item_id,date,time,doctor_payment) VALUES(v_doctors[1+(i-1)%6],v_appt,v_item,v_day+1,'16:00',1500);
         FOR j IN 1..2 LOOP
             INSERT INTO appointment(patient_id,doctor_id,branch_id,appointment_date,start_time,end_time,appointment_type,status,created_by,treatment_id)
-            VALUES(v_patients[i],v_doctors[1+(i-1)%6],v_branch,CURRENT_DATE+j-1,make_time(9+(i/6),0,0),make_time(9+(i/6),30,0),'Follow-up',CASE WHEN j=1 THEN 'Scheduled' ELSE 'Cancelled' END,'Reception',v_treatments[1]);
+            VALUES(v_patients[i],v_doctors[1+(i-1)%6],v_branch,CURRENT_DATE+j-1,make_time(9+(i/6),0,0),make_time(9+(i/6),30,0),'Follow-up',CASE WHEN j=1 THEN 'Scheduled' ELSE 'Cancelled' END,'Reception',v_treatments[1]) RETURNING appointment_id INTO v_appt;
+            IF i=1 AND j=1 THEN
+                CALL sp_reschedule_appointment(v_appt,CURRENT_DATE+14,'09:00','09:30','Reception');
+            END IF;
         END LOOP;
     END LOOP;
 END;

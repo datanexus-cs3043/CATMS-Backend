@@ -110,10 +110,16 @@ BEGIN
     END IF;
 
     IF EXISTS (
-        SELECT 1 FROM branch b JOIN staff s ON s.staff_id=b.manager_staff_id
-        WHERE b.branch_id<>s.branch_id
+        SELECT 1 FROM branch b LEFT JOIN staff s ON s.staff_id=b.manager_staff_id
+        WHERE s.staff_id IS NULL OR b.branch_id<>s.branch_id
+           OR LOWER(REPLACE(BTRIM(s.role), ' ', '_')) NOT IN ('branch_manager', 'manager')
     ) THEN
-        RAISE EXCEPTION 'Branch manager belongs to another branch';
+        RAISE EXCEPTION 'Sample branch is missing a valid manager at its own branch';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM invoice i JOIN appointment a USING (appointment_id)
+               WHERE a.status <> 'Completed') THEN
+        RAISE EXCEPTION 'Only completed appointments may have invoices';
     END IF;
 
     IF EXISTS (

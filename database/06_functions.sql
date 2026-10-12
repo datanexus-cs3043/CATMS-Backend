@@ -1,5 +1,48 @@
 -- Business rules and derived totals for the existing CATMS table contract.
 
+CREATE OR REPLACE FUNCTION fn_validate_branch_manager()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    -- A new branch may be provisioned before its staff; an assigned manager must
+    -- actually hold the manager role at this branch, not just have a valid FK.
+    IF NEW.manager_staff_id IS NOT NULL THEN
+        PERFORM staff_id FROM staff
+         WHERE staff_id = NEW.manager_staff_id AND branch_id = NEW.branch_id
+           AND LOWER(REPLACE(BTRIM(role), ' ', '_')) IN ('branch_manager', 'manager')
+         FOR SHARE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Assigned manager must be a branch manager at this branch'
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION fn_validate_staff_assignment()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM branch WHERE manager_staff_id = OLD.staff_id
+               AND (branch_id <> NEW.branch_id
+                    OR LOWER(REPLACE(BTRIM(NEW.role), ' ', '_')) NOT IN ('branch_manager', 'manager'))) THEN
+        RAISE EXCEPTION 'Assign a replacement branch manager before moving or changing this staff role'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    -- Historical visits and financial attribution must not silently change branch
+    -- when the linked staff record is edited. Transfers need a separate history model.
+    IF NEW.branch_id IS DISTINCT FROM OLD.branch_id AND (
+        EXISTS (SELECT 1 FROM appointment a JOIN doctor d USING (doctor_id)
+                 WHERE d.staff_id = OLD.staff_id)
+        OR EXISTS (SELECT 1 FROM invoice WHERE staff_id = OLD.staff_id)
+        OR EXISTS (SELECT 1 FROM patient_payment WHERE received_by = OLD.staff_id)
+    ) THEN
+        RAISE EXCEPTION 'Staff with visit or financial history cannot change branch'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION fn_recalculate_invoice(
     p_invoice_id INTEGER,
     p_use_item_total BOOLEAN DEFAULT FALSE,
@@ -110,7 +153,24 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     v_billed NUMERIC(12, 2);
+    v_appointment appointment%ROWTYPE;
 BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.appointment_id IS DISTINCT FROM OLD.appointment_id THEN
+        RAISE EXCEPTION 'An issued invoice cannot move to another appointment'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT * INTO v_appointment FROM appointment
+     WHERE appointment_id = NEW.appointment_id FOR UPDATE;
+    IF NOT FOUND OR v_appointment.status <> 'Completed' THEN
+        RAISE EXCEPTION 'Only completed appointments can be invoiced'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    PERFORM staff_id FROM staff
+     WHERE staff_id = NEW.staff_id AND branch_id = v_appointment.branch_id FOR SHARE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Invoice staff must belong to the appointment branch'
+            USING ERRCODE = 'check_violation';
+    END IF;
     IF TG_OP = 'INSERT' THEN
         v_billed := NEW.amount_paid + NEW.balance;
     ELSE
@@ -198,7 +258,16 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     v_original appointment%ROWTYPE;
+    v_doctor_branch INTEGER;
 BEGIN
+    -- Protect direct SQL as well as API booking. Lock the staff assignment while
+    -- this slot is written; transferring a doctor with visit history is refused.
+    SELECT s.branch_id INTO v_doctor_branch FROM doctor d JOIN staff s USING (staff_id)
+     WHERE d.doctor_id = NEW.doctor_id FOR SHARE OF d, s;
+    IF NOT FOUND OR v_doctor_branch IS DISTINCT FROM NEW.branch_id THEN
+        RAISE EXCEPTION 'Doctor must belong to the appointment branch'
+            USING ERRCODE = 'check_violation';
+    END IF;
     IF NEW.end_time <= NEW.start_time THEN
         RAISE EXCEPTION 'Appointment end time must be later than start time'
             USING ERRCODE = 'check_violation';
@@ -208,6 +277,13 @@ BEGIN
        AND OLD.status IN ('Completed', 'Cancelled')
        AND NEW.status IS DISTINCT FROM OLD.status THEN
         RAISE EXCEPTION 'Completed or cancelled appointments cannot be reopened'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NEW.status = 'Completed' AND NEW.treatment_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM appointment_treatment WHERE appointment_id = NEW.appointment_id)
+       AND NOT EXISTS (SELECT 1 FROM consultation_note WHERE appointment_id = NEW.appointment_id) THEN
+        RAISE EXCEPTION 'A completed appointment requires a treatment or consultation note'
             USING ERRCODE = 'check_violation';
     END IF;
 

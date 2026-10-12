@@ -3,6 +3,11 @@
 -- Secondary indexes for foreign-key lookups and query performance
 
 CREATE INDEX IF NOT EXISTS idx_users_logins_user_id ON users_logins(user_id);
+-- Username-or-email sign-in compares case-insensitively. Plain username UNIQUE
+-- cannot serve these expressions; use nonunique indexes so legacy duplicates
+-- remain detectable by the existing fail-closed authentication check.
+CREATE INDEX IF NOT EXISTS idx_user_username_lower ON "user" (LOWER(username));
+CREATE INDEX IF NOT EXISTS idx_user_email_lower ON "user" (LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_staff_branch_id ON staff(branch_id);
 CREATE INDEX IF NOT EXISTS idx_staff_users_logins_id ON staff(users_logins_id);
 CREATE INDEX IF NOT EXISTS idx_patient_branch_id ON patient(branch_id);

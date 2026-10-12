@@ -169,6 +169,21 @@ async def update_staff(
         _check_branch_access(staff, current_user)
         _check_staff_management(update_data, current_user, staff)
         _check_manager_branch(update_data.get("branch_id", staff["branch_id"]), current_user)
+        if {"branch_id", "role"}.intersection(update_data):
+            branch_id = update_data.get("branch_id", staff["branch_id"])
+            role = update_data.get("role", staff["role"]).strip().lower().replace(" ", "_")
+            await cur.execute("SELECT branch_id FROM branch WHERE manager_staff_id = %s;", (staff_id,))
+            managed_branch = await cur.fetchone()
+            if managed_branch and (branch_id != managed_branch["branch_id"] or role not in ("branch_manager", "manager")):
+                raise HTTPException(409, "Assign a replacement branch manager before moving or changing this staff role.")
+            if branch_id != staff["branch_id"]:
+                await cur.execute("""SELECT EXISTS (
+                    SELECT 1 FROM appointment a JOIN doctor d USING (doctor_id) WHERE d.staff_id = %s
+                    UNION ALL SELECT 1 FROM invoice WHERE staff_id = %s
+                    UNION ALL SELECT 1 FROM patient_payment WHERE received_by = %s
+                ) AS has_history;""", (staff_id, staff_id, staff_id))
+                if (await cur.fetchone())["has_history"]:
+                    raise HTTPException(409, "Staff with visit or financial history cannot change branch.")
         await cur.execute(
             f"UPDATE staff SET {', '.join(clauses)} WHERE staff_id = %s RETURNING *;",
             tuple(values),

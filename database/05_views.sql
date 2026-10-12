@@ -66,15 +66,16 @@ SELECT tc.category_id,
        t.treatment_name,
        i.invoice_date,
        a.branch_id,
-       COALESCE(SUM(ii.quantity), 0)::BIGINT AS usage_count,
-       COALESCE(SUM(ii.quantity * ii.unitprice), 0)::NUMERIC(12, 2) AS treatment_revenue
+       COALESCE(SUM(at.quantity), 0)::BIGINT AS usage_count,
+       COALESCE(SUM(at.quantity * at.unitprice), 0)::NUMERIC(12, 2) AS treatment_revenue,
+       a.appointment_date
 FROM treatment_category tc
 JOIN treatment t ON t.category_id = tc.category_id
-LEFT JOIN invoice_item ii ON ii.treatment_id = t.treatment_id
-LEFT JOIN invoice i ON i.invoice_id = ii.invoice_id
-LEFT JOIN appointment a ON a.appointment_id = i.appointment_id
+JOIN appointment_treatment at ON at.treatment_id = t.treatment_id
+JOIN appointment a ON a.appointment_id = at.appointment_id AND a.status = 'Completed'
+LEFT JOIN invoice i ON i.appointment_id = a.appointment_id
 GROUP BY tc.category_id, tc.category_name, t.treatment_id,
-         t.treatment_name, i.invoice_date, a.branch_id;
+         t.treatment_name, i.invoice_date, a.branch_id, a.appointment_date;
 
 CREATE OR REPLACE VIEW v_insurance_vs_out_of_pocket AS
 WITH claim_totals AS (

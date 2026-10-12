@@ -25,10 +25,16 @@ There are no real medical histories or asserted SLMC registrations in this datas
 Select an empty PostgreSQL database/schema. Run 01 through 08 in order, install
 `pgcrypto`, then run 09 and 10. File 09 refuses a populated target and uses generated
 identities rather than fixed IDs or sequence resets. It creates 3 branches, 18 staff,
-6 doctors, 24 patients and 72 visits with completed/scheduled/cancelled journeys,
+6 doctors, 24 patients and 73 visits with completed/scheduled/cancelled journeys,
 itemized invoices, receipt-ledger entries, compensation and claim outcomes.
 Every table receives linked data. Dates are relative to the execution date in
 Asia/Colombo so the dashboard has current and historical visits.
+
+The fresh seed retains each patient's registering branch while demonstrating
+visits at another branch, gives two general physicians a second Family Medicine
+specialty, includes a history-preserving reschedule, and supplies both 80% and
+100% illustrative coverage. These are fresh-setup scenarios, not changes applied
+to the existing shared database by replaying file 09.
 
 Seed accounts use independently salted bcrypt hashes of the demonstration initial
 password `password123`; change it before any non-demonstration use. The backend

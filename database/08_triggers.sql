@@ -4,7 +4,42 @@
 -- Database-level integrity rules. Run after 05_views.sql, 06_functions.sql,
 -- and 07_procedures.sql.
 
+CREATE OR REPLACE TRIGGER trg_branch_manager_validate
+BEFORE INSERT OR UPDATE OF manager_staff_id ON branch
+FOR EACH ROW EXECUTE FUNCTION fn_validate_branch_manager();
+
+CREATE OR REPLACE TRIGGER trg_staff_assignment_validate
+BEFORE UPDATE OF branch_id, role ON staff
+FOR EACH ROW EXECUTE FUNCTION fn_validate_staff_assignment();
+
 CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+-- PostgreSQL NUMERIC accepts NaN (and treats it as greater than ordinary values).
+-- Nonnegative checks alone therefore do not guarantee usable monetary values.
+DO $finite$
+DECLARE
+    rule RECORD;
+BEGIN
+    FOR rule IN SELECT * FROM (VALUES
+        ('treatment', 'standard_price::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'')'),
+        ('appointment_treatment', 'unitprice::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'')'),
+        ('invoice', 'amount_paid::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'') AND balance::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'')'),
+        ('invoice_item', 'unitprice::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'')'),
+        ('patient_payment', 'amount::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'')'),
+        ('doctor_payment', 'doctor_payment::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'')'),
+        ('insurance_coverage', 'coverage_percentage::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'') AND maximum_amount::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'')'),
+        ('insurance_claim', 'claim_amount::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'') AND approved_amount::text NOT IN (''NaN'', ''Infinity'', ''-Infinity'')')
+    ) AS checks(table_name, expression)
+    LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                       WHERE conrelid = to_regclass(rule.table_name)
+                         AND conname = 'ck_finite_financial_values') THEN
+            EXECUTE format('ALTER TABLE %I ADD CONSTRAINT ck_finite_financial_values CHECK (%s)',
+                           rule.table_name, rule.expression);
+        END IF;
+    END LOOP;
+END;
+$finite$;
 
 DO $$
 BEGIN
@@ -96,7 +131,7 @@ AFTER INSERT OR UPDATE OF treatment_id ON appointment
 FOR EACH ROW EXECUTE FUNCTION fn_sync_appointment_treatment();
 
 CREATE OR REPLACE TRIGGER trg_invoice_prepare
-BEFORE INSERT OR UPDATE OF amount_paid, balance, status ON invoice
+BEFORE INSERT OR UPDATE OF appointment_id, staff_id, amount_paid, balance, status ON invoice
 FOR EACH ROW EXECUTE FUNCTION fn_prepare_invoice();
 
 CREATE OR REPLACE TRIGGER trg_invoice_seed_payment_ledger
