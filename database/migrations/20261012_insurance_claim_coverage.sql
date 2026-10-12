@@ -1,6 +1,5 @@
 -- MedSync: forward-only claim validation reconciliation, PostgreSQL 16+.
 -- Apply only after the numbered schema/functions/triggers and earlier migrations.
--- This file is a reviewed application-rule proposal, NOT an applied Neon migration.
 -- It changes a function/trigger only: no deletes, backfills, receipts or balances.
 -- Assumption: treatment maximum_amount applies once per policy/invoice (visit).
 -- Annual benefits, insurer settlement and historical coverage versioning are not modeled.

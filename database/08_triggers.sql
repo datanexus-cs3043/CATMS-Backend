@@ -124,7 +124,7 @@ AFTER INSERT ON invoice
 FOR EACH ROW EXECUTE FUNCTION fn_mark_appointment_completed();
 
 CREATE OR REPLACE TRIGGER trg_insurance_claim_validate
-BEFORE INSERT OR UPDATE OF invoice_id, policy_id, claim_amount, approved_amount
+BEFORE INSERT OR UPDATE OF invoice_id, policy_id, claim_amount, approved_amount, status
 ON insurance_claim
 FOR EACH ROW EXECUTE FUNCTION fn_validate_insurance_claim();
 
