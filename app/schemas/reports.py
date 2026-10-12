@@ -20,6 +20,7 @@ class DoctorRevenueResponse(BaseModel):
     """Report 2: revenue per doctor from invoices in the period."""
     doctor_id: int
     doctor_name: str
+    branch_id: int
     branch_name: str
     appointment_count: int
     total_revenue: Decimal
@@ -50,6 +51,11 @@ class TreatmentCategoryReportResponse(BaseModel):
 
 
 class InsuranceComparisonResponse(BaseModel):
+    """Current values for an invoice-date cohort; out_of_pocket_amount is the legacy net-payment alias.
+
+    Approved claims are coverage decisions, not insurer receipts. Estimated patient
+    exposure is invoiced_amount minus insurance_approved_amount, not cash paid.
+    """
     invoiced_amount: Decimal
     insurance_approved_amount: Decimal
     patient_paid_amount: Decimal

@@ -88,7 +88,7 @@ async def doctor_revenue(
     where, params = _filters(current_user, "a.branch_id", "i.invoice_date", branch_id, from_date, to_date)
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"""SELECT d.doctor_id, d.doctor_name, b.branch_name,
+            f"""SELECT d.doctor_id, d.doctor_name, b.branch_id, b.branch_name,
                        COUNT(DISTINCT i.appointment_id) AS appointment_count,
                        SUM(i.amount_paid + i.balance) AS total_revenue,
                        SUM(i.amount_paid) AS collected,
@@ -97,8 +97,8 @@ async def doctor_revenue(
                 JOIN appointment a ON a.appointment_id = i.appointment_id
                 JOIN doctor d ON d.doctor_id = a.doctor_id
                 JOIN branch b ON b.branch_id = a.branch_id{where}
-                GROUP BY d.doctor_id, d.doctor_name, b.branch_name
-                ORDER BY total_revenue DESC, d.doctor_name;""",
+                GROUP BY d.doctor_id, d.doctor_name, b.branch_id, b.branch_name
+                ORDER BY total_revenue DESC, d.doctor_name, b.branch_id;""",
             params,
         )
         return [DoctorRevenueResponse(**row) for row in await cur.fetchall()]
