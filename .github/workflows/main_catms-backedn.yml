@@ -8,7 +8,16 @@ on:
   push:
     branches:
       - 'main'
+    # Database checks and documentation must not restart the production API.
+    paths:
+      - 'app/**'
+      - 'requirements.txt'
+      - 'run.py'
   workflow_dispatch:
+
+concurrency:
+  group: azure-backend-production
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -73,4 +82,3 @@ jobs:
         with:
           app-name: 'catms-backedn'
           slot-name: 'Production'
-          
