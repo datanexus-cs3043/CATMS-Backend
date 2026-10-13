@@ -40,6 +40,10 @@ jobs:
       PGDATABASE: catms
     steps:
       - uses: actions/checkout@v4
+      - name: Initialize disposable database prerequisites
+        run: |
+          psql -v ON_ERROR_STOP=1 -q -f database/01_database.sql
+          psql -v ON_ERROR_STOP=1 -q -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;'
       - name: Build and check a fresh schema
         shell: bash
         run: |
