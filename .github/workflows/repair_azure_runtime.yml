@@ -1,0 +1,30 @@
+name: Repair Azure backend runtime authentication
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: repair-azure-backend-auth
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Login to the existing Azure deployment identity
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_55726BC754A145A9830F9CC13D3C0721 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_FA23C37278B0443D8FAF83EB3D5BCCEC }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_2EC5E36137D042548092CE21F3CAAF70 }}
+      - name: Repair runtime settings and restart the backend
+        run: python scripts/repair_azure_auth.py
