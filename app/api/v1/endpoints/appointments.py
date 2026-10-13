@@ -354,7 +354,12 @@ async def get_appointment(
                 p.first_name || ' ' || p.last_name AS patient_name,
                 d.doctor_name,
                 b.branch_name,
-                t.treatment_name
+                t.treatment_name,
+                -- created_by holds the booking account's user_id; older rows hold free text.
+                COALESCE((SELECT u.first_name || ' ' || u.last_name FROM "user" u
+                          WHERE u.user_id = CASE WHEN a.created_by ~ '^[0-9]{1,9}$'
+                                                 THEN a.created_by::integer END),
+                         a.created_by) AS created_by_name
             FROM appointment a
             JOIN patient p ON a.patient_id = p.patient_id
             JOIN doctor d ON a.doctor_id = d.doctor_id

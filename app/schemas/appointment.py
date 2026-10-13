@@ -153,4 +153,5 @@ class AppointmentDetailResponse(AppointmentResponse):
     doctor_name: Optional[str] = None
     branch_name: Optional[str] = None
     treatment_name: Optional[str] = None
+    created_by_name: Optional[str] = None
     consultation_notes: List[ConsultationNoteResponse] = Field(default_factory=list)
