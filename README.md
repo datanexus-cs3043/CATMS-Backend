@@ -99,5 +99,9 @@ violations into `409 Conflict`, including concurrent creation and rename conflic
 Repository SQL changes are not automatically applied to Neon at application startup.
 
 ## Central Documentation
+See [Sri Lankan demonstration data](database/SEED_DATA.md) for reference sources,
+fresh-schema setup and data boundaries. The seed refuses populated databases;
+existing environments use approved forward migrations and maintenance instead.
+
 
 For system specifications and architecture guidelines, visit the **[project-docs Repository](https://github.com/datanexus-cs3043/project-docs)**.

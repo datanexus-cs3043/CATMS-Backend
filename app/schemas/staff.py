@@ -15,9 +15,16 @@ class StaffBase(BaseModel):
 
 
 class StaffCreate(StaffBase):
+    username: str = Field(min_length=3, max_length=100)
+
     @field_validator("first_name", "last_name", "email", "staff_type", "role", mode="before")
     @classmethod
     def trim_required_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def trim_username(cls, value):
         return value.strip() if isinstance(value, str) else value
 
 
@@ -41,5 +48,6 @@ class StaffUpdate(BaseModel):
 
 class StaffResponse(StaffBase):
     staff_id: int
+    username: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

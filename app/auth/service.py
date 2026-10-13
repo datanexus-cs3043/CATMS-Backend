@@ -2,6 +2,7 @@ import logging
 from typing import Optional, Dict, Any
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from starlette.concurrency import run_in_threadpool
 
 from app.auth.security import verify_password
 from app.auth.schemas import AuthUser, UserType, UserRole
@@ -33,32 +34,41 @@ async def authenticate_user(
 ) -> Optional[AuthUser]:
     """
     Authenticates a user via direct SQL:
-    1. Fetches the user record from the "user" table.
+    1. Resolves a unique account by username or email from the "user" table.
     2. Verifies the password hash.
     3. Determines if the account belongs to a Staff or a Patient.
     4. Records a login audit event into users_logins.
     5. Returns safe AuthUser details (or None if invalid).
     """
     async with conn.cursor(row_factory=dict_row) as cur:
-        # 1. Fetch user by username (case-insensitive search)
+        # Keep the username parameter compatible with existing callers; it accepts either identifier.
+        identifier = username.strip()
+        if not identifier:
+            return None
+
+        # 1. Match both account fields case-insensitively, without guessing from an '@'.
         await cur.execute(
             """
             SELECT user_id, first_name, last_name, contact_details, email, username, password
             FROM "user"
-            WHERE LOWER(username) = LOWER(%s);
+            WHERE LOWER(username) = LOWER(%s) OR LOWER(email) = LOWER(%s)
+            LIMIT 2;
             """,
-            (username.strip(),)
+            (identifier, identifier)
         )
-        user_row = await cur.fetchone()
+        matches = await cur.fetchall()
 
-        if not user_row:
-            logger.info(f"Authentication failed: User '{username}' not found.")
+        # Emails are not schema-unique, and one user's email could be another's username.
+        # Fail closed on ambiguity; never choose an account based on row order/password.
+        if len(matches) != 1:
+            logger.info("Authentication failed: Login identifier did not resolve to one account.")
             return None
+        user_row = matches[0]
 
         # 2. Verify password hash
         stored_hash = user_row.get("password") or ""
-        if not verify_password(plain_password, stored_hash):
-            logger.info(f"Authentication failed: Incorrect password for user '{username}'.")
+        if not await run_in_threadpool(verify_password, plain_password, stored_hash):
+            logger.info("Authentication failed: Incorrect password.")
             return None
 
         user_id = user_row["user_id"]
@@ -96,7 +106,7 @@ async def authenticate_user(
                 user_type=UserType.STAFF.value,
                 role=resolved_role,
                 username=user_name,
-                email=staff_row.get("email") or email,
+                email=email,
                 first_name=staff_row.get("first_name") or user_row.get("first_name"),
                 last_name=staff_row.get("last_name") or user_row.get("last_name"),
                 staff_id=staff_row["staff_id"],
@@ -195,7 +205,7 @@ async def get_user_by_id(conn: AsyncConnection, user_id: int) -> Optional[AuthUs
                 user_type=UserType.STAFF.value,
                 role=resolved_role,
                 username=user_row.get("username"),
-                email=staff_row.get("email") or email,
+                email=email,
                 first_name=staff_row.get("first_name") or user_row.get("first_name"),
                 last_name=staff_row.get("last_name") or user_row.get("last_name"),
                 staff_id=staff_row["staff_id"],

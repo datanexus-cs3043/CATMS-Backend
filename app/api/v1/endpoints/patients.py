@@ -2,16 +2,19 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from starlette.concurrency import run_in_threadpool
 
 from app.core.database import get_db
 from app.auth.dependencies import get_current_user, verify_patient_ownership, require_csrf, require_role
 from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, database_mutation
 from app.auth.schemas import JWTPayload
+from app.auth.security import get_password_hash
 from app.schemas.appointment import AppointmentDetailResponse
 from app.schemas.patient import (
     PatientCreate,
     PatientUpdate,
     PatientResponse,
+    PatientRegistrationResponse,
     PatientDetailResponse,
     EmergencyContactCreate,
     EmergencyContactUpdate,
@@ -29,7 +32,7 @@ async def list_patients(
     skip: int = Query(0, ge=0, description="Offset for pagination"),
     limit: int = Query(50, ge=1, le=100, description="Page size"),
     search: Optional[str] = Query(None, description="Search by patient name or email"),
-    branch_id: Optional[int] = Query(None, description="Filter by branch ID"),
+    branch_id: Optional[int] = Query(None, gt=0, description="Filter by registration branch ID"),
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
@@ -37,9 +40,8 @@ async def list_patients(
     query = "SELECT * FROM patient WHERE 1=1"
     params = []
 
-    if current_user.role.lower() != "admin":
-        check_branch_scope(branch_id if branch_id is not None else current_user.branch_id, current_user)
-        branch_id = current_user.branch_id
+    # Registration branch is a directory filter, not a shared-record read boundary.
+    check_branch_scope(current_user.branch_id, current_user)
     if current_user.role.lower() == "doctor":
         if current_user.doctor_id is None:
             raise HTTPException(403, "A linked doctor profile is required.")
@@ -98,15 +100,18 @@ async def get_patient(
         return PatientDetailResponse(**patient_data)
 
 
-@router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED,
+@router.post("", response_model=PatientRegistrationResponse, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(require_csrf)])
 async def create_patient(
     payload: PatientCreate,
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "receptionist_cashier")),
 ):
-    """Register a new patient into the system."""
+    """Register a patient, optional linked portal account, and contact atomically."""
     check_branch_scope(payload.branch_id, current_user)
+    # Hash off the event loop and before taking the short account-write lock.
+    password_hash = (await run_in_threadpool(get_password_hash, "password123")
+                     if payload.portal_username is not None else None)
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT branch_id FROM branch WHERE branch_id = %s;", (payload.branch_id,))
         if not await cur.fetchone():
@@ -115,11 +120,33 @@ async def create_patient(
                 detail=f"Branch with id {payload.branch_id} does not exist",
             )
 
+        user_id = None
+        if payload.portal_username is not None:
+            # The legacy schema has no case-insensitive email uniqueness constraint.
+            # Serialize this check/insert against all other account writers, including
+            # staff registration, without changing existing accounts or schema.
+            await cur.execute('LOCK TABLE "user" IN SHARE ROW EXCLUSIVE MODE;')
+            await cur.execute(
+                '''SELECT user_id FROM "user"
+                   WHERE LOWER(username) IN (LOWER(%s), LOWER(%s))
+                      OR LOWER(email) IN (LOWER(%s), LOWER(%s)) LIMIT 1;''',
+                (payload.portal_username, payload.email, payload.portal_username, payload.email),
+            )
+            if await cur.fetchone():
+                raise HTTPException(409, "That username or account email is already in use. Choose unique sign-in details.")
+            await cur.execute(
+                '''INSERT INTO "user" (first_name, last_name, contact_details, email, username, password)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING user_id;''',
+                (payload.first_name, payload.last_name, payload.contact_details,
+                 payload.email, payload.portal_username, password_hash),
+            )
+            user_id = (await cur.fetchone())["user_id"]
+
         insert_query = """
             INSERT INTO patient (
                 branch_id, first_name, last_name, date_of_birth, gender,
-                patient_type, contact_details, email, address
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                patient_type, contact_details, email, address, user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *;
         """
         await cur.execute(
@@ -134,10 +161,18 @@ async def create_patient(
                 payload.contact_details,
                 payload.email,
                 payload.address,
+                user_id,
             ),
         )
         new_patient = await cur.fetchone()
-        return PatientResponse(**new_patient)
+        if payload.emergency_contact is not None:
+            contact = payload.emergency_contact
+            await cur.execute(
+                """INSERT INTO emergency_contact (patient_id, contact_name, relationship, phone)
+                   VALUES (%s, %s, %s, %s);""",
+                (new_patient["patient_id"], contact.contact_name, contact.relationship, contact.phone),
+            )
+        return PatientRegistrationResponse(**new_patient, portal_username=payload.portal_username)
 
 
 @router.put("/{patient_id}", response_model=PatientResponse, dependencies=[Depends(require_csrf)])
@@ -154,6 +189,9 @@ async def update_patient(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No update fields provided",
         )
+
+    if current_user.user_type == "patient" and set(update_data) - {"contact_details", "email", "address"}:
+        raise HTTPException(403, "Patients can only update their own contact details. Clinic staff manage demographic details.")
 
     if "branch_id" in update_data:
         check_branch_scope(update_data["branch_id"], current_user)
@@ -269,6 +307,13 @@ async def create_emergency_contact(
 
 
 async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_user: JWTPayload, *, lock: bool = False) -> None:
+    if current_user.user_type == "staff":
+        # Fail closed for unknown roles or non-admin staff without a branch.
+        check_branch_scope(current_user.branch_id, current_user)
+        if lock and current_user.role.lower() == "doctor":
+            raise HTTPException(403, "Clinic administration manages patient and emergency-contact details.")
+    elif current_user.user_type != "patient" or current_user.role.lower() != "patient" or current_user.patient_id is None:
+        raise HTTPException(403, "A linked patient profile or authorized staff account is required.")
     verify_patient_ownership(patient_id, current_user)
     async with conn.cursor(row_factory=dict_row) as cur:
         query = "SELECT branch_id FROM patient WHERE patient_id = %s"
@@ -277,8 +322,9 @@ async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_
     if not patient:
         raise HTTPException(404, f"Patient {patient_id} not found")
     if current_user.user_type == "staff":
-        check_branch_scope(patient["branch_id"], current_user)
         if current_user.role.lower() == "doctor":
+            # Patient records are shared across branches (brief), so a doctor may open any
+            # patient they have an appointment with, wherever the patient registered.
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT appointment_id FROM appointment WHERE patient_id = %s AND doctor_id = %s AND branch_id = %s LIMIT 1;",
@@ -286,6 +332,10 @@ async def _check_patient_access(conn: AsyncConnection, patient_id: int, current_
                 )
                 if current_user.doctor_id is None or not await cur.fetchone():
                     raise HTTPException(403, "Doctors can only access patients assigned to their appointments.")
+        elif lock:
+            # Staff writes retain the registration-branch boundary; shared reads
+            # must also work before the first appointment at the visiting branch.
+            check_branch_scope(patient["branch_id"], current_user)
 
 
 # =========================================================================

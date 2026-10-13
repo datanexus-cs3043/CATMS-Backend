@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Optional, Any, Dict
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class UserType(str, Enum):
@@ -17,8 +17,16 @@ class UserRole(str, Enum):
 
 
 class LoginRequest(BaseModel):
-    username: str = Field(..., min_length=1, description="Username for login")
+    username: str = Field(..., min_length=1, description="Username or account email for login")
     password: str = Field(..., min_length=1, description="User password")
+
+    @field_validator("username")
+    @classmethod
+    def normalize_login_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Enter a username or email")
+        return value
 
 
 class AuthUser(BaseModel):

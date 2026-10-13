@@ -23,6 +23,11 @@ class InvoiceCreate(InvoiceBase):
     pass
 
 
+class InvoiceGenerate(BaseModel):
+    """Bill a completed appointment from its recorded treatments."""
+    appointment_id: int = Field(gt=0)
+
+
 class InvoiceUpdate(BaseModel):
     staff_id: Optional[int] = Field(None, gt=0)
     invoice_date: Optional[date] = None
@@ -44,6 +49,9 @@ class InvoiceResponse(InvoiceBase):
     patient_name: Optional[str] = None
     doctor_name: Optional[str] = None
     appointment_date: Optional[date] = None
+    total_amount: Optional[Decimal] = None        # amount_paid + balance (= invoice items total)
+    insurance_covered: Optional[Decimal] = None   # approved amount of Approved claims
+    insurance_pending: Optional[Decimal] = None   # claimed amount still Pending
 
     model_config = ConfigDict(from_attributes=True)
 

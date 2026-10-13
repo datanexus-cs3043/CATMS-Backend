@@ -8,16 +8,28 @@ from app.api.v1.endpoints._guards import STAFF_ROLES, check_branch_scope, databa
 from app.auth.dependencies import get_current_user, require_csrf, require_role, verify_patient_ownership
 from app.auth.schemas import JWTPayload, UserType
 from app.core.database import get_db
-from app.schemas.appointment_treatment import AppointmentTreatmentCreate
-from app.schemas.treatment import TreatmentResponse
+from app.schemas.appointment_treatment import AppointmentTreatmentCreate, AppointmentTreatmentResponse
 
 router = APIRouter(prefix="/appointments", tags=["Appointment Treatments"])
 
+# One appointment can have several treatments (appointment_treatment bridge table).
+# unitprice is copied from the catalogue when recorded, so later price changes do not
+# alter past visits. The row marked is_primary mirrors appointment.treatment_id (the
+# service chosen at booking) and is kept in sync by trg_appointment_treatment_sync.
+_TREATMENT_ROWS = """
+    SELECT at.appointment_treatment_id, at.appointment_id, at.treatment_id, at.quantity,
+           at.unitprice AS unit_price, at.is_primary,
+           t.treatment_name, t.service_code, c.category_name
+      FROM appointment_treatment at
+      JOIN treatment t ON t.treatment_id = at.treatment_id
+      LEFT JOIN treatment_category c ON c.category_id = t.category_id
+"""
 
-async def _get_appointment(cur, appointment_id: int) -> dict:
+
+async def _get_appointment(cur, appointment_id: int, *, lock: bool = True) -> dict:
     await cur.execute(
-        """SELECT appointment_id, patient_id, branch_id, doctor_id, treatment_id
-           FROM appointment WHERE appointment_id = %s FOR UPDATE;""",
+        """SELECT appointment_id, patient_id, branch_id, doctor_id, treatment_id, status
+           FROM appointment WHERE appointment_id = %s""" + (" FOR UPDATE;" if lock else ";"),
         (appointment_id,),
     )
     appointment = await cur.fetchone()
@@ -39,30 +51,35 @@ def _authorize_appointment(appointment: dict, current_user: JWTPayload, *, write
         raise HTTPException(403, "Doctors can only access their own appointments.")
 
 
-@router.get("/{appointment_id}/treatments", response_model=List[TreatmentResponse])
+async def _ensure_editable(cur, appointment: dict) -> None:
+    """Treatments can change until the visit is cancelled or billed."""
+    if appointment["status"] == "Cancelled":
+        raise HTTPException(409, "Treatments cannot be recorded for a cancelled appointment.")
+    await cur.execute("SELECT 1 FROM invoice WHERE appointment_id = %s;", (appointment["appointment_id"],))
+    if await cur.fetchone():
+        raise HTTPException(409, "Treatments are locked because an invoice has been generated.")
+
+
+@router.get("/{appointment_id}/treatments", response_model=List[AppointmentTreatmentResponse])
 async def list_appointment_treatments(
     appointment_id: int,
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(get_current_user),
 ):
     async with conn.cursor(row_factory=dict_row) as cur:
-        appointment = await _get_appointment(cur, appointment_id)
+        appointment = await _get_appointment(cur, appointment_id, lock=False)
         _authorize_appointment(appointment, current_user)
-        if appointment["treatment_id"] is None:
-            return []
         await cur.execute(
-            """SELECT t.*, c.category_name
-               FROM treatment t JOIN treatment_category c ON c.category_id = t.category_id
-               WHERE t.treatment_id = %s;""",
-            (appointment["treatment_id"],),
+            _TREATMENT_ROWS + " WHERE at.appointment_id = %s ORDER BY at.appointment_treatment_id;",
+            (appointment_id,),
         )
-        treatment = await cur.fetchone()
-    return [TreatmentResponse(**treatment)] if treatment else []
+        rows = await cur.fetchall()
+    return [AppointmentTreatmentResponse(**row) for row in rows]
 
 
 @router.post(
     "/{appointment_id}/treatments",
-    response_model=TreatmentResponse,
+    response_model=AppointmentTreatmentResponse,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_csrf)],
 )
@@ -75,42 +92,59 @@ async def add_appointment_treatment(
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         appointment = await _get_appointment(cur, appointment_id)
         _authorize_appointment(appointment, current_user, write=True)
-        if appointment["treatment_id"] is not None:
-            raise HTTPException(409, "This appointment already has a treatment assigned.")
-        await cur.execute(
-            """SELECT t.*, c.category_name
-               FROM treatment t JOIN treatment_category c ON c.category_id = t.category_id
-               WHERE t.treatment_id = %s;""",
-            (payload.treatment_id,),
-        )
+        await _ensure_editable(cur, appointment)
+        await cur.execute("SELECT standard_price FROM treatment WHERE treatment_id = %s;", (payload.treatment_id,))
         treatment = await cur.fetchone()
         if not treatment:
             raise HTTPException(404, f"Treatment {payload.treatment_id} not found")
         await cur.execute(
-            "UPDATE appointment SET treatment_id = %s WHERE appointment_id = %s;",
-            (payload.treatment_id, appointment_id),
+            "SELECT 1 FROM appointment_treatment WHERE appointment_id = %s AND treatment_id = %s;",
+            (appointment_id, payload.treatment_id),
         )
-    return TreatmentResponse(**treatment)
+        if await cur.fetchone():
+            raise HTTPException(409, "This treatment is already recorded for the appointment.")
+        await cur.execute(
+            """INSERT INTO appointment_treatment (appointment_id, treatment_id, quantity, unitprice)
+               VALUES (%s, %s, %s, %s) RETURNING appointment_treatment_id;""",
+            (appointment_id, payload.treatment_id, payload.quantity, treatment["standard_price"]),
+        )
+        row_id = (await cur.fetchone())["appointment_treatment_id"]
+        await cur.execute(_TREATMENT_ROWS + " WHERE at.appointment_treatment_id = %s;", (row_id,))
+        row = await cur.fetchone()
+    return AppointmentTreatmentResponse(**row)
 
 
 @router.delete(
-    "/{appointment_id}/treatments/{treatment_id}",
+    "/{appointment_id}/treatments/{appointment_treatment_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_csrf)],
 )
 async def remove_appointment_treatment(
     appointment_id: int,
-    treatment_id: int,
+    appointment_treatment_id: int,
     conn: AsyncConnection = Depends(get_db),
     current_user: JWTPayload = Depends(require_role(*STAFF_ROLES)),
 ):
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         appointment = await _get_appointment(cur, appointment_id)
         _authorize_appointment(appointment, current_user, write=True)
-        if appointment["treatment_id"] != treatment_id:
-            raise HTTPException(404, "Treatment is not assigned to this appointment.")
+        await _ensure_editable(cur, appointment)
         await cur.execute(
-            "UPDATE appointment SET treatment_id = NULL WHERE appointment_id = %s;",
-            (appointment_id,),
+            "SELECT is_primary FROM appointment_treatment "
+            "WHERE appointment_treatment_id = %s AND appointment_id = %s;",
+            (appointment_treatment_id, appointment_id),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Treatment is not recorded for this appointment.")
+        if row["is_primary"]:
+            # Clear the booked service too, otherwise the sync trigger would re-add it.
+            await cur.execute(
+                "UPDATE appointment SET treatment_id = NULL WHERE appointment_id = %s;",
+                (appointment_id,),
+            )
+        await cur.execute(
+            "DELETE FROM appointment_treatment WHERE appointment_treatment_id = %s;",
+            (appointment_treatment_id,),
         )
     return None

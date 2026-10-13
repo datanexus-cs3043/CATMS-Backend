@@ -48,6 +48,7 @@ class InsurancePolicyUpdate(BaseModel):
 
 class InsurancePolicyResponse(InsurancePolicyBase):
     policy_id: int
+    branch_id: Optional[int] = None
     provider_name: Optional[str] = None
     patient_name: Optional[str] = None
 

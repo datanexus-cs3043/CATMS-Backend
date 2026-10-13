@@ -35,8 +35,9 @@ async def _get_branch(conn: AsyncConnection, branch_id: int) -> dict:
 @router.get("", response_model=List[BranchResponse], summary="List branches")
 async def list_branches(
     conn: AsyncConnection = Depends(get_db),
-    current_user: JWTPayload = Depends(require_role("admin", "branch_manager")),
+    current_user: JWTPayload = Depends(require_role("admin", "branch_manager", "receptionist_cashier")),
 ):
+    # Non-admin staff only see their own branch (front desk needs it for booking/registration forms).
     async with conn.cursor(row_factory=dict_row) as cur:
         if current_user.role.lower() == "admin":
             await cur.execute("SELECT * FROM branch ORDER BY branch_name ASC;")
@@ -112,10 +113,12 @@ async def update_branch(
     values = list(update_data.values()) + [branch_id]
     async with database_mutation(conn), conn.cursor(row_factory=dict_row) as cur:
         if update_data.get("manager_staff_id") is not None:
-            await cur.execute("SELECT staff_id FROM staff WHERE staff_id = %s AND branch_id = %s;",
+            await cur.execute("""SELECT staff_id FROM staff WHERE staff_id = %s AND branch_id = %s
+                              AND LOWER(REPLACE(BTRIM(role), ' ', '_')) IN ('branch_manager', 'manager')
+                              FOR SHARE;""",
                               (update_data["manager_staff_id"], branch_id))
             if not await cur.fetchone():
-                raise HTTPException(422, "The manager must belong to this branch.")
+                raise HTTPException(422, "Select a branch-manager staff member belonging to this branch.")
         await cur.execute(
             f"UPDATE branch SET {', '.join(clauses)} WHERE branch_id = %s RETURNING *;",
             tuple(values),

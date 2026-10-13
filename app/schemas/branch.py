@@ -8,7 +8,7 @@ class BranchBase(BaseModel):
     branch_name: str = Field(min_length=1, max_length=150)
     location: str = Field(min_length=1, max_length=255)
     contact_details: Optional[str] = Field(None, max_length=255)
-    manager_staff_id: Optional[int] = None
+    manager_staff_id: Optional[int] = Field(None, gt=0)
 
     @field_validator("branch_name", "location", mode="before")
     @classmethod
@@ -24,7 +24,7 @@ class BranchUpdate(BaseModel):
     branch_name: Optional[str] = Field(None, max_length=150)
     location: Optional[str] = Field(None, max_length=255)
     contact_details: Optional[str] = Field(None, max_length=255)
-    manager_staff_id: Optional[int] = None
+    manager_staff_id: Optional[int] = Field(None, gt=0)
 
     @field_validator("branch_name", "location", mode="before")
     @classmethod

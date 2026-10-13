@@ -5,7 +5,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
           FROM information_schema.columns
-         WHERE table_schema = 'public'
+         WHERE table_schema = current_schema()
            AND table_name = 'appointment'
            AND column_name = 'status'
     ) THEN
@@ -102,11 +102,51 @@ BEGIN
         RAISE EXCEPTION 'Overlapping active appointments exist for a doctor';
     END IF;
 
-    IF to_regclass('public.v_branch_daily_appointment_summary') IS NULL
-       OR to_regclass('public.v_doctor_revenue') IS NULL
-       OR to_regclass('public.v_outstanding_balances') IS NULL
-       OR to_regclass('public.v_treatment_category_usage') IS NULL
-       OR to_regclass('public.v_insurance_vs_out_of_pocket') IS NULL THEN
+    IF EXISTS (
+        SELECT 1 FROM appointment a JOIN doctor d USING (doctor_id)
+        JOIN staff s USING (staff_id) WHERE a.branch_id <> s.branch_id
+    ) THEN
+        RAISE EXCEPTION 'Appointment branch differs from assigned doctor branch';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM branch b LEFT JOIN staff s ON s.staff_id=b.manager_staff_id
+        WHERE s.staff_id IS NULL OR b.branch_id<>s.branch_id
+           OR LOWER(REPLACE(BTRIM(s.role), ' ', '_')) NOT IN ('branch_manager', 'manager')
+    ) THEN
+        RAISE EXCEPTION 'Sample branch is missing a valid manager at its own branch';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM invoice i JOIN appointment a USING (appointment_id)
+               WHERE a.status <> 'Completed') THEN
+        RAISE EXCEPTION 'Only completed appointments may have invoices';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM insurance_claim c JOIN invoice i USING (invoice_id)
+        JOIN appointment a USING (appointment_id) JOIN insurance_policy p USING (policy_id)
+        WHERE a.patient_id<>p.patient_id OR c.status NOT IN ('Pending','Approved','Rejected')
+        OR (c.status<>'Approved' AND c.approved_amount<>0)
+    ) THEN
+        RAISE EXCEPTION 'Claim ownership or status/approval is inconsistent';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM invoice i JOIN appointment a USING (appointment_id)
+        JOIN staff s USING (staff_id) WHERE a.branch_id<>s.branch_id
+    ) OR EXISTS (
+        SELECT 1 FROM patient_payment pp JOIN invoice i USING (invoice_id)
+        JOIN appointment a USING (appointment_id) JOIN staff s ON s.staff_id=pp.received_by
+        WHERE a.branch_id<>s.branch_id
+    ) THEN
+        RAISE EXCEPTION 'Invoice or receipt staff belongs to another branch';
+    END IF;
+
+    IF to_regclass('v_branch_daily_appointment_summary') IS NULL
+       OR to_regclass('v_doctor_revenue') IS NULL
+       OR to_regclass('v_outstanding_balances') IS NULL
+       OR to_regclass('v_treatment_category_usage') IS NULL
+       OR to_regclass('v_insurance_vs_out_of_pocket') IS NULL THEN
         RAISE EXCEPTION 'One or more required reporting views are missing';
     END IF;
 END;

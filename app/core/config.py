@@ -1,4 +1,5 @@
-from typing import Optional, List
+from typing import Optional, List, Literal
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,13 +31,35 @@ class Settings(BaseSettings):
     # HttpOnly Cookie Settings
     COOKIE_NAME: str = "medsync_access_token"
     COOKIE_SECURE: bool = False
-    COOKIE_SAMESITE: str = "lax"
+    COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
 
     # CSRF Protection Settings
     CSRF_SECRET_KEY: str = "medsync_csrf_secret_key_protection_2026_catms"
 
     # CORS Frontend Origins (comma-separated or string)
     FRONTEND_URLS: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+
+    @field_validator("ENVIRONMENT", "COOKIE_SAMESITE", mode="before")
+    @classmethod
+    def normalize_environment_options(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_runtime_safety(self):
+        if not 0 <= self.DB_POOL_MIN_SIZE <= self.DB_POOL_MAX_SIZE or self.DB_POOL_MAX_SIZE < 1 or self.DB_POOL_TIMEOUT <= 0:
+            raise ValueError("Connection pool sizes and timeout must be valid positive bounds")
+        if self.COOKIE_SAMESITE == "none" and not self.COOKIE_SECURE:
+            raise ValueError("SameSite=None requires secure cookies")
+        if self.ENVIRONMENT in {"prod", "production"}:
+            for name in ("JWT_SECRET_KEY", "CSRF_SECRET_KEY"):
+                secret = getattr(self, name)
+                if secret == type(self).model_fields[name].default or len(secret.strip()) < 32:
+                    raise ValueError("Production requires explicitly configured, strong authentication secrets")
+            if self.JWT_SECRET_KEY == self.CSRF_SECRET_KEY:
+                raise ValueError("Production authentication and CSRF secrets must be distinct")
+            if not self.COOKIE_SECURE:
+                raise ValueError("Production requires secure cookies")
+        return self
 
     @property
     def db_conninfo(self) -> str:
