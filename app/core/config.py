@@ -51,14 +51,21 @@ class Settings(BaseSettings):
         if self.COOKIE_SAMESITE == "none" and not self.COOKIE_SECURE:
             raise ValueError("SameSite=None requires secure cookies")
         if self.ENVIRONMENT in {"prod", "production"}:
+            invalid_secrets = []
             for name in ("JWT_SECRET_KEY", "CSRF_SECRET_KEY"):
                 secret = getattr(self, name)
                 if secret == type(self).model_fields[name].default or len(secret.strip()) < 32:
-                    raise ValueError("Production requires explicitly configured, strong authentication secrets")
+                    invalid_secrets.append(name)
+            if invalid_secrets:
+                raise ValueError(
+                    "Production requires independently generated secrets of at least 32 characters for: "
+                    + ", ".join(invalid_secrets)
+                    + ". Set these in the hosting environment; source defaults are not valid for production."
+                )
             if self.JWT_SECRET_KEY == self.CSRF_SECRET_KEY:
-                raise ValueError("Production authentication and CSRF secrets must be distinct")
+                raise ValueError("JWT_SECRET_KEY and CSRF_SECRET_KEY must be distinct in production")
             if not self.COOKIE_SECURE:
-                raise ValueError("Production requires secure cookies")
+                raise ValueError("Production requires COOKIE_SECURE=true")
         return self
 
     @property
@@ -76,6 +83,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        # Startup validation must not echo secrets or database URLs into host logs.
+        hide_input_in_errors=True,
         extra="ignore"
     )
 
