@@ -122,20 +122,18 @@ The backend uses port 8000 by default and the frontend uses port 5173. PostgreSQ
 
 ## Database Setup and Migrations
 
-For a **fresh empty application schema only**, review and run SQL files 01–08 in numeric order. Before seed file 09, install PostgreSQL `pgcrypto` (`CREATE EXTENSION IF NOT EXISTS pgcrypto;`) using an account permitted to create it. Then run 09 for optional demonstration data and 10 for SQL assertions, with a client configured to stop on errors. The seed refuses a populated target. See [Sri Lankan demonstration data](database/SEED_DATA.md) for prerequisites and fictional-data boundaries.
+SQL files 01–08 define a **fresh empty application schema** in numeric order. File 09 contains optional fictional demonstration data and requires PostgreSQL `pgcrypto`; its guard refuses a populated target. File 10 contains SQL assertions. The [seed-data notes](database/SEED_DATA.md) describe the Sri Lankan data conventions and prerequisites.
 
-For an existing database, inspect its installed objects and use reviewed, target-specific [forward migrations](database/migrations/). Do not replay the numbered schema/seed pipeline or blindly apply every historical migration. Application startup and repository pushes do not automatically apply live migrations.
+Changes to an existing database are represented by [forward migrations](database/migrations/); the numbered schema and seed files describe fresh setup. Application startup and repository pushes do not apply live migrations.
 
-Specialty uniqueness uses `LOWER(BTRIM(specialty_name))` through `uq_specialty_name_normalized`. Before applying the [existing-database migration](database/migrations/20261008_specialty_name_uniqueness.sql), check whether that index is already installed and resolve duplicate names and doctor links through review; do not automatically delete or merge records.
+Specialty uniqueness uses `LOWER(BTRIM(specialty_name))` through `uq_specialty_name_normalized`. The [existing-database migration](database/migrations/20261008_specialty_name_uniqueness.sql) defines the corresponding change for databases created before that index.
 
 ## Hosting and CI/CD
 
-The primary frontend is [www.medsync.live](https://www.medsync.live) on Vercel; the primary backend is [backend.medsync.live](https://backend.medsync.live) on Azure App Service. [Render](https://catms-backend-fa6t.onrender.com/api/health) is a backend standby, not automatic failover. A URL does not establish identical deployed revisions or sessions across hosts.
+The primary frontend is [www.medsync.live](https://www.medsync.live) on Vercel; the primary backend is [backend.medsync.live](https://backend.medsync.live) on Azure App Service. [Render](https://catms-backend-fa6t.onrender.com/api/health) is a separately deployed backend standby. The application has no automatic failover between the two backend hosts.
 
 - [Azure deployment](.github/workflows/main_catms-backedn.yml) runs on main pushes affecting `app/**`, `requirements.txt` or `run.py`, or manual dispatch. Releases are serialized without cancelling the active run; documentation/database-only pushes do not trigger this deployment.
-- [Neon validation](.github/workflows/neon-sync.yml) checks fresh SQL and the selected integrity migration on disposable PostgreSQL 16. A manual main run then performs a protected, **read-only** live Neon check. It does not apply live migrations or guarantee all application tests pass.
-
-Verify the intended backend/frontend revisions, installed database objects, role-scoped workflows and report output in the target environment before release. Build or health success alone is not full workflow verification.
+- [Neon validation](.github/workflows/neon-sync.yml) checks fresh SQL and the selected integrity migration on disposable PostgreSQL 16. A manual main run performs a protected, **read-only** live Neon check; the workflow does not apply live migrations or run application journey tests.
 
 ## Central Documentation
 
