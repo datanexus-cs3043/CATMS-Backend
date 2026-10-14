@@ -2,7 +2,7 @@ import sys
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional, Any, List, Dict
+from typing import AsyncGenerator, Optional
 
 # On Windows, psycopg async requires WindowsSelectorEventLoopPolicy
 if sys.platform == "win32":
@@ -140,19 +140,3 @@ async def get_db() -> AsyncGenerator[AsyncConnection, None]:
     """
     async with _database_connection() as connection:
         yield connection
-
-
-async def fetch_one(query: str, params: Optional[tuple | dict] = None) -> Optional[Dict[str, Any]]:
-    """Helper utility to execute a direct SQL query and fetch a single record."""
-    async with _database_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(query, params)
-            return await cur.fetchone()
-
-
-async def fetch_all(query: str, params: Optional[tuple | dict] = None) -> List[Dict[str, Any]]:
-    """Helper utility to execute a direct SQL query and fetch all matching records."""
-    async with _database_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(query, params)
-            return await cur.fetchall()
