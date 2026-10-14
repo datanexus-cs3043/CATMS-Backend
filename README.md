@@ -4,6 +4,18 @@ Python FastAPI REST API and PostgreSQL database scripts for **MedSync / CATMS**,
 
 [Web application](https://www.medsync.live) · [Primary API](https://backend.medsync.live/api/health) · [API documentation](https://backend.medsync.live/docs) · [Frontend repository](https://github.com/datanexus-cs3043/CATMS-Frontend) · [Project documentation](https://github.com/datanexus-cs3043/project-docs)
 
+## Team Contributions
+
+Work was collaborative across the frontend, backend and database. The following summarizes each member's contribution areas; these are shared areas of work, not exclusive ownership of entire modules.
+
+| Member | Contribution areas |
+| --- | --- |
+| Shashika | Pydantic request/response schemas and validation; backend foundation and patient/doctor/appointment integration; cross-layer integration corrections; Docker, CI/CD, deployment, hosting and project documentation |
+| Nayanajith Bandara | Authentication, authorization and security; account/role integration and backend API structure; staff, branch and treatment APIs; billing/insurance/report API integration and stored procedures |
+| Tharushi | Frontend foundation and shared components; patient, staff, treatment and profile interfaces; appointment lifecycle endpoints; insurance, consultation, claim and payment table contributions |
+| Adithya | Invoice, insurance, branch-management and patient-facing interfaces; report presentation; database procedures, integrity constraints and appointment/treatment/billing/insurance triggers |
+| Sithuka | Account/branch/staff SQL and appointment status/treatment bridge; invoice-generation routine and patient-receipt ledger; report views and functions; dashboard and frontend API/CSRF integration |
+
 ## Functional Overview
 
 - Patient records, emergency contacts and optional patient portal accounts; shared patient access across clinics with scoped writes.
@@ -124,18 +136,6 @@ The primary frontend is [www.medsync.live](https://www.medsync.live) on Vercel; 
 - [Neon validation](.github/workflows/neon-sync.yml) checks fresh SQL and the selected integrity migration on disposable PostgreSQL 16. A manual main run then performs a protected, **read-only** live Neon check. It does not apply live migrations or guarantee all application tests pass.
 
 Verify the intended backend/frontend revisions, installed database objects, role-scoped workflows and report output in the target environment before release. Build or health success alone is not full workflow verification.
-
-## Team Contributions
-
-Work was collaborative across the frontend, backend and database. The following summarizes each member's contribution areas; these are shared areas of work, not exclusive ownership of entire modules.
-
-| Member | Contribution areas |
-| --- | --- |
-| Shashika | Database schema, table relationships and SQL organization; backend foundation and patient/doctor/appointment integration; validation and cross-layer corrections; Docker, CI/CD, deployment, hosting and project documentation |
-| Nayanajith Bandara | Authentication, authorization and security; account/role integration and backend API structure; staff, branch and treatment APIs; billing/insurance/report API integration and stored procedures |
-| Tharushi | Frontend foundation and shared components; patient, staff, treatment and profile interfaces; appointment lifecycle endpoints; insurance, consultation, claim and payment table contributions |
-| Adithya | Invoice, insurance, branch-management and patient-facing interfaces; report presentation; database procedures, integrity constraints and appointment/treatment/billing/insurance triggers |
-| Sithuka | Account/branch/staff SQL and appointment status/treatment bridge; invoice-generation routine and patient-receipt ledger; report views and functions; dashboard and frontend API/CSRF integration |
 
 ## Central Documentation
 
