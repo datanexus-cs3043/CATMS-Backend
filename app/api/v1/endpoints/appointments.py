@@ -154,12 +154,10 @@ async def cancel_appointment(
         _check_action_scope(appointment["branch_id"], appointment["doctor_id"], current_user)
         await _ensure_scheduled(cur, appointment)
         await cur.execute(
-            """UPDATE appointment
-               SET status = 'Cancelled'
-               WHERE appointment_id = %s
-               RETURNING *;""",
+            "CALL sp_cancel_appointment(%s);",
             (appointment_id,),
         )
+        await cur.execute("SELECT * FROM appointment WHERE appointment_id = %s;", (appointment_id,))
         return AppointmentResponse(**await cur.fetchone())
 
 
@@ -189,17 +187,13 @@ async def reschedule_appointment(
         await _check_booking(cur, appointment["doctor_id"], appointment["branch_id"],
                              payload.appointment_date, payload.start_time, payload.end_time,
                              original_id=appointment_id)
-        created_by = str(current_user.user_id)
+        # The procedure inserts the successor; the appointment trigger cancels the original.
         await cur.execute(
-            """INSERT INTO appointment
-               (patient_id, doctor_id, branch_id, appointment_date, start_time,
-                end_time, appointment_type, created_by, original_appointment_id, treatment_id)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *;""",
-            (appointment["patient_id"], appointment["doctor_id"], appointment["branch_id"],
-             payload.appointment_date, payload.start_time, payload.end_time,
-             appointment["appointment_type"], created_by, appointment_id,
-             appointment["treatment_id"]),
+            "CALL sp_reschedule_appointment(%s, %s, %s, %s, %s);",
+            (appointment_id, payload.appointment_date, payload.start_time,
+             payload.end_time, str(current_user.user_id)),
         )
+        await cur.execute("SELECT * FROM appointment WHERE original_appointment_id = %s;", (appointment_id,))
         return AppointmentResponse(**await cur.fetchone())
 
 
@@ -360,7 +354,12 @@ async def get_appointment(
                 p.first_name || ' ' || p.last_name AS patient_name,
                 d.doctor_name,
                 b.branch_name,
-                t.treatment_name
+                t.treatment_name,
+                -- created_by holds the booking account's user_id; older rows hold free text.
+                COALESCE((SELECT u.first_name || ' ' || u.last_name FROM "user" u
+                          WHERE u.user_id = CASE WHEN a.created_by ~ '^[0-9]{1,9}$'
+                                                 THEN a.created_by::integer END),
+                         a.created_by) AS created_by_name
             FROM appointment a
             JOIN patient p ON a.patient_id = p.patient_id
             JOIN doctor d ON a.doctor_id = d.doctor_id
